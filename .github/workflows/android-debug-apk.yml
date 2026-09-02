@@ -81,7 +81,7 @@ jobs:
 
       - name: Build arm64 debug APK
         working-directory: app
-        run: npm run tauri android build -- --target aarch64 --apk --debug
+        run: npm run tauri android build -- --target aarch64 --apk true --aab false --debug
 
       - name: Locate the built APK
         id: locate
