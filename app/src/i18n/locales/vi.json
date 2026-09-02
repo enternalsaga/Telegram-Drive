@@ -486,6 +486,12 @@
     "drop_browser_help": "Hãy dùng ứng dụng máy tính để thả tệp hoặc mở hộp thoại tải lên.",
     "open_upload_dialog": "Mở hộp thoại tải lên"
   },
+  "media": {
+    "format_not_playable": "Không phát được {{format}} trong ứng dụng",
+    "format_not_playable_hint": "Trình phát tích hợp không mở được định dạng này. Hãy tải tệp về và phát bằng trình phát media trên thiết bị.",
+    "format_not_previewable": "Ứng dụng không mở được ảnh {{format}}. Hãy tải tệp về để xem.",
+    "preview_quality_only": "Không mở được ảnh {{format}} ở kích thước gốc tại đây. Đây là bản xem trước từ Telegram."
+  },
   "archive": {
     "archive_viewer": "Trình xem tệp lưu trữ",
     "extract": "Giải nén",

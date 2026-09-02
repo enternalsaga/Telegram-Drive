@@ -486,6 +486,12 @@
     "drop_browser_help": "Use the desktop app for file drops, or open the upload dialog instead.",
     "open_upload_dialog": "Open Upload Dialog"
   },
+  "media": {
+    "format_not_playable": "Can't play {{format}} in the app",
+    "format_not_playable_hint": "The built-in player cannot open this container. Download the file and play it in a media player on your device.",
+    "format_not_previewable": "The app cannot open {{format}} images. Download the file to view it.",
+    "preview_quality_only": "{{format}} images cannot be opened at full size here. This is the Telegram preview."
+  },
   "archive": {
     "archive_viewer": "Archive Viewer",
     "extract": "Extract",

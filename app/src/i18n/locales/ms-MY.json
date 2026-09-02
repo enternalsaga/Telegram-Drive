@@ -486,6 +486,12 @@
     "drop_browser_help": "Gunakan apl desktop untuk menjatuhkan fail atau sebaliknya buka dialog muat naik.",
     "open_upload_dialog": "Buka Dialog Muat Naik"
   },
+  "media": {
+    "format_not_playable": "Tidak dapat memainkan {{format}} dalam aplikasi",
+    "format_not_playable_hint": "Pemain terbina dalam tidak dapat membuka bekas ini. Muat turun fail dan mainkannya dengan pemain media pada peranti anda.",
+    "format_not_previewable": "Aplikasi tidak dapat membuka imej {{format}}. Muat turun fail untuk melihatnya.",
+    "preview_quality_only": "Imej {{format}} tidak dapat dibuka pada saiz penuh di sini. Ini ialah pratonton Telegram."
+  },
   "archive": {
     "archive_viewer": "Pemapar Arkib",
     "extract": "Ekstrak",

@@ -486,6 +486,12 @@
     "drop_browser_help": "Usa l'app desktop per trascinare i file oppure apri la finestra di caricamento.",
     "open_upload_dialog": "Apri finestra di caricamento"
   },
+  "media": {
+    "format_not_playable": "Impossibile riprodurre {{format}} nell'app",
+    "format_not_playable_hint": "Il lettore integrato non può aprire questo contenitore. Scarica il file e riproducilo con un lettore multimediale del tuo dispositivo.",
+    "format_not_previewable": "L'app non può aprire le immagini {{format}}. Scarica il file per visualizzarlo.",
+    "preview_quality_only": "Le immagini {{format}} non possono essere aperte a dimensione originale qui. Questa è l'anteprima di Telegram."
+  },
   "archive": {
     "archive_viewer": "Visualizzatore archivio",
     "extract": "Estrai",

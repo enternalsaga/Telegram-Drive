@@ -486,6 +486,12 @@
     "drop_browser_help": "Gamitin ang desktop app para sa mga file drop, o buksan na lang ang dialog sa pag-upload.",
     "open_upload_dialog": "Buksan ang Dialog sa Pag-upload"
   },
+  "media": {
+    "format_not_playable": "Hindi mapatugtog ang {{format}} sa app",
+    "format_not_playable_hint": "Hindi mabuksan ng built-in na player ang container na ito. I-download ang file at patugtugin ito sa isang media player sa iyong device.",
+    "format_not_previewable": "Hindi mabuksan ng app ang mga larawang {{format}}. I-download ang file para makita ito.",
+    "preview_quality_only": "Hindi mabuksan sa buong laki ang mga larawang {{format}} dito. Ito ang preview mula sa Telegram."
+  },
   "archive": {
     "archive_viewer": "Archive Viewer",
     "extract": "I-extract",

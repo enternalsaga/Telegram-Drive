@@ -1,5 +1,8 @@
 export { isAndroidPlatform } from './utils/platform';
 export {
+  canPlayVideoInApp,
+  canRenderImageInApp,
+  fileFormatLabel,
   formatBytes,
   isArchiveFile,
   isAudioFile,

@@ -84,6 +84,7 @@ mod db_migrations;
 pub mod fmp4_remux;
 pub mod jni_cache;
 mod local_cors;
+pub mod media_types;
 pub mod mp4_utils;
 pub mod server;
 mod server_lifecycle;
@@ -450,33 +451,7 @@ fn cmd_open_file_externally(path: String, _app_handle: tauri::AppHandle) -> Resu
                 .new_string(&path)
                 .map_err(|e| format!("Failed to create path JString: {}", e))?;
 
-            let lower_ext = std::path::Path::new(&path)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-
-            let mime_type = match lower_ext.as_str() {
-                "jpg" | "jpeg" => "image/jpeg",
-                "png" => "image/png",
-                "pdf" => "application/pdf",
-                "mp4" => "video/mp4",
-                "m4v" => "video/x-m4v",
-                "mkv" => "video/x-matroska",
-                "mov" => "video/quicktime",
-                "webm" => "video/webm",
-                "avi" => "video/x-msvideo",
-                "mp3" => "audio/mpeg",
-                "m4a" => "audio/mp4",
-                "aac" => "audio/aac",
-                "flac" => "audio/flac",
-                "ogg" | "oga" => "audio/ogg",
-                "opus" => "audio/opus",
-                "wav" => "audio/wav",
-                "txt" => "text/plain",
-                "zip" => "application/zip",
-                _ => "application/octet-stream",
-            };
+            let mime_type = crate::media_types::mime_for_path(&path);
 
             let mime_jstr = env
                 .new_string(mime_type)

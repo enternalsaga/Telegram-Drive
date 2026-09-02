@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canPlayVideoInApp,
+  canRenderImageInApp,
+  fileFormatLabel,
   formatBytes,
   isArchiveFile,
   isAudioFile,
@@ -23,13 +26,51 @@ describe('file utilities', () => {
 
   it('classifies supported names case-insensitively', () => {
     expect(isImageFile('PHOTO.HEIC')).toBe(true);
+    expect(isImageFile('holiday.WEBP')).toBe(true);
+    expect(isImageFile('holiday.avif')).toBe(true);
     expect(isVideoFile('clip.MP4')).toBe(true);
+    expect(isVideoFile('clip.WEBM')).toBe(true);
     expect(isAudioFile('voice.opus')).toBe(true);
-    expect(isMediaFile('clipmp4')).toBe(true);
     expect(isVideoFile('recording.bin', 'video/mp4')).toBe(true);
     expect(isAudioFile('recording.bin', 'audio/aac')).toBe(true);
+    expect(isImageFile('sticker.bin', 'image/webp')).toBe(true);
     expect(isPdfFile('report.PDF')).toBe(true);
     expect(isArchiveFile('backup.7Z')).toBe(true);
+  });
+
+  it('matches on the trailing extension, not on any suffix of the name', () => {
+    expect(isMediaFile('clipmp4')).toBe(false);
+    expect(isVideoFile('notes')).toBe(false);
+    expect(isImageFile('calico')).toBe(false);
+    expect(isMediaFile('clipmp4', 'video/mp4')).toBe(true);
+  });
+
+  it('separates formats the WebView decodes from the ones it refuses', () => {
+    expect(canRenderImageInApp('holiday.webp')).toBe(true);
+    expect(canRenderImageInApp('holiday.avif')).toBe(true);
+    expect(canRenderImageInApp('PHOTO.HEIC')).toBe(false);
+    expect(canRenderImageInApp('scan.tiff')).toBe(false);
+    expect(canPlayVideoInApp('clip.webm')).toBe(true);
+    expect(canPlayVideoInApp('clip.mov')).toBe(true);
+    expect(canPlayVideoInApp('clip.mkv')).toBe(false);
+    expect(canPlayVideoInApp('clip.avi')).toBe(false);
+  });
+
+  it('prefers the extension over a generic Telegram MIME type', () => {
+    expect(canPlayVideoInApp('clip.mkv', 'application/octet-stream')).toBe(false);
+    expect(canPlayVideoInApp('clip.webm', 'application/octet-stream')).toBe(true);
+    expect(canPlayVideoInApp('recording', 'video/webm')).toBe(true);
+    expect(canRenderImageInApp('sticker', 'image/webp')).toBe(true);
+    expect(canRenderImageInApp('sticker', 'image/heic')).toBe(false);
+  });
+
+  it('labels the container for user-facing messages', () => {
+    expect(fileFormatLabel('clip.mkv')).toBe('MKV');
+    expect(fileFormatLabel('PHOTO.HEIC')).toBe('HEIC');
+    expect(fileFormatLabel('no-extension')).toBe('');
+    expect(fileFormatLabel('no-extension', 'video/x-matroska')).toBe('MATROSKA');
+    expect(fileFormatLabel('no-extension', 'image/heic')).toBe('HEIC');
+    expect(fileFormatLabel('clip.mkv', 'video/mp4')).toBe('MKV');
   });
 
   it('sanitizes platform-reserved filename characters', () => {

@@ -486,6 +486,12 @@
     "drop_browser_help": "ファイルのドロップにはデスクトップアプリを使用するか、アップロードダイアログを開いてください。",
     "open_upload_dialog": "アップロードダイアログを開く"
   },
+  "media": {
+    "format_not_playable": "{{format}} はアプリ内で再生できません",
+    "format_not_playable_hint": "内蔵プレーヤーはこのコンテナ形式を開けません。ファイルをダウンロードして、端末のメディアプレーヤーで再生してください。",
+    "format_not_previewable": "アプリでは {{format}} 画像を開けません。ファイルをダウンロードしてご覧ください。",
+    "preview_quality_only": "{{format}} 画像はここで原寸表示できません。これは Telegram のプレビューです。"
+  },
   "archive": {
     "archive_viewer": "アーカイブビューアー",
     "extract": "解凍",

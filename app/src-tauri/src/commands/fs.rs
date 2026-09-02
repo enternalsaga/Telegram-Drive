@@ -310,26 +310,7 @@ async fn probe_tdenc2_header(
 }
 
 fn inferred_mime_type(path: &str) -> &'static str {
-    match std::path::Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "pdf" => "application/pdf",
-        "mp4" | "m4v" => "video/mp4",
-        "mov" => "video/quicktime",
-        "mp3" => "audio/mpeg",
-        "wav" => "audio/wav",
-        "txt" => "text/plain",
-        "zip" => "application/zip",
-        _ => "application/octet-stream",
-    }
+    crate::media_types::mime_for_path(path)
 }
 
 static UPLOAD_CANCELLATIONS: OnceLock<Mutex<HashMap<String, oneshot::Sender<()>>>> =
@@ -2954,23 +2935,7 @@ pub async fn cmd_download_file(
         // Use the already-decoded filename from the cache path computation above
         let file_name = &android_file_name;
 
-        let lower_ext = std::path::Path::new(file_name)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        let mime_type = match lower_ext.as_str() {
-            "jpg" | "jpeg" => "image/jpeg",
-            "png" => "image/png",
-            "pdf" => "application/pdf",
-            "mp4" => "video/mp4",
-            "mp3" => "audio/mpeg",
-            "txt" => "text/plain",
-            "zip" => "application/zip",
-            "bin" => "application/octet-stream",
-            _ => "application/octet-stream",
-        };
+        let mime_type = crate::media_types::mime_for_path(file_name);
 
         log::info!(
             "JNI: Copying {} from cache {} to public downloads",

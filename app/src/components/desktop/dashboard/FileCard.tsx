@@ -10,6 +10,7 @@ import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
 import { Skeleton } from '../../ui';
 import { EncryptionBadge } from '../../shared/EncryptionBadge';
 import { describeFileActions } from './fileActionDescriptors';
+import { isImageFile } from '../../../utils';
 import i18n from '../../../i18n';
 
 interface FileCardProps {
@@ -27,13 +28,6 @@ interface FileCardProps {
     selectedIds?: number[];
     disableDrag?: boolean;
 }
-
-// Check if file is an image type that can have a thumbnail
-function isImageFile(filename: string): boolean {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext);
-}
-
 
 export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSelected, onClick, onContextMenu, activeFolderId, height, onToggleSelection, selectedIds, disableDrag = false }: FileCardProps) {
     const actions = describeFileActions(file);
@@ -84,7 +78,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
 
     // Lazy load thumbnail for image files
     useEffect(() => {
-        if (isFolder || !isImageFile(file.name)) return;
+        if (isFolder || !isImageFile(file.name, file.mime_type)) return;
 
         let cancelled = false;
         const cached = getCachedThumbnail(file.id, activeFolderId);
@@ -104,7 +98,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
         });
 
         return () => { cancelled = true; };
-    }, [file.id, file.name, activeFolderId, isFolder]);
+    }, [file.id, file.name, file.mime_type, activeFolderId, isFolder]);
 
     return (
         <div
@@ -148,7 +142,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                     <div className="file-card-icon absolute inset-x-0 bottom-12 top-0 flex items-center justify-center p-3">
                         {isFolder ? (
                             <Folder className="h-10 w-10 max-h-full max-w-full shrink-0 text-app-accent" strokeWidth={1.6} />
-                        ) : thumbnailLoading && isImageFile(file.name) ? (
+                        ) : thumbnailLoading && isImageFile(file.name, file.mime_type) ? (
                             <Skeleton className="h-10 w-10 shrink-0" />
                         ) : (
                             <FileTypeIcon filename={file.name} size="lg" className="h-10 w-10 max-h-full max-w-full shrink-0" />

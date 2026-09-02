@@ -17,7 +17,24 @@ use tokio::io::AsyncWriteExt;
 
 /// Supported image file extensions for thumbnails.
 /// Shared between Tauri commands and the REST API cache cleanup.
-pub const THUMBNAIL_EXTS: &[&str] = &["thumb.jpg", "jpg", "jpeg", "png", "gif", "webp", "bmp"];
+pub const THUMBNAIL_EXTS: &[&str] = &[
+    "thumb.jpg",
+    "jpg",
+    "jpeg",
+    "jfif",
+    "png",
+    "apng",
+    "gif",
+    "webp",
+    "avif",
+    "bmp",
+    "svg",
+    "ico",
+    "heic",
+    "heif",
+    "tif",
+    "tiff",
+];
 
 const PREVIEW_CACHE_MAX_FILES: usize = 30;
 const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
@@ -127,16 +144,11 @@ fn media_extension(media: &Media) -> String {
             if !from_name.is_empty() {
                 from_name
             } else {
-                match document.mime_type().unwrap_or("") {
-                    "image/jpeg" => "jpg".to_string(),
-                    "image/png" => "png".to_string(),
-                    "image/gif" => "gif".to_string(),
-                    "image/webp" => "webp".to_string(),
-                    "image/bmp" => "bmp".to_string(),
-                    "application/pdf" => "pdf".to_string(),
-                    "video/mp4" => "mp4".to_string(),
-                    _ => "bin".to_string(),
-                }
+                // The cached filename's extension is what the asset protocol uses to
+                // pick a Content-Type, so an unnamed document still needs a real one.
+                crate::media_types::extension_for_mime(document.mime_type().unwrap_or(""))
+                    .unwrap_or("bin")
+                    .to_string()
             }
         }
         Media::Photo(_) => "jpg".to_string(),

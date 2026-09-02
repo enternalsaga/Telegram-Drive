@@ -1,10 +1,11 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { X, ChevronLeft, ChevronRight, Maximize2, Minimize2 } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, Download, FileVideo, Maximize2, Minimize2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { TelegramFile } from '../../../types';
-import { isVideoFile, isAudioFile } from '../../../utils';
+import { canPlayVideoInApp, fileFormatLabel, isVideoFile, isAudioFile } from '../../../utils';
 import { AdaptiveMediaPlayer } from './AdaptiveMediaPlayer';
+import { useTranslation } from 'react-i18next';
 import i18n from '../../../i18n';
 
 interface StreamInfo {
@@ -21,13 +22,15 @@ interface MediaPlayerProps {
     currentIndex?: number;
     totalItems?: number;
     activeFolderId: number | null;
+    onDownload?: (file: TelegramFile) => void;
 }
 
 function isMp4Video(name: string): boolean {
     return name.toLowerCase().endsWith('.mp4');
 }
 
-export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId }: MediaPlayerProps) {
+export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, totalItems, activeFolderId, onDownload }: MediaPlayerProps) {
+    const { t } = useTranslation();
     const [streamInfo, setStreamInfo] = useState<StreamInfo | null>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
@@ -79,9 +82,12 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
         ? `${streamInfo.base_url}/stream/${folderIdParam}/${file.id}?token=${encodeURIComponent(streamInfo.token)}${streamCredential}`
         : null;
 
-    const isVideo = isVideoFile(file.name);
-    const isAudio = isAudioFile(file.name);
+    const isVideo = isVideoFile(file.name, file.mime_type);
+    const isAudio = isAudioFile(file.name, file.mime_type);
     const isMp4 = isMp4Video(file.name);
+    // MKV, AVI, WMV and friends reach the player, but no WebView demuxes them.
+    // Explaining that beats handing the user a <video> element that never starts.
+    const isUnplayableContainer = isVideo && !canPlayVideoInApp(file.name, file.mime_type);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -195,6 +201,26 @@ export function MediaPlayer({ file, onClose, onNext, onPrev, currentIndex, total
                         <div className="flex flex-col items-center gap-4 text-white">
                             <div className="w-10 h-10 border-4 border-telegram-primary border-t-transparent rounded-full animate-spin"></div>
                             <p>Preparing stream...</p>
+                        </div>
+                    ) : isUnplayableContainer ? (
+                        <div className="flex max-w-md flex-col items-center gap-3 p-6 text-center text-white">
+                            <FileVideo className="h-10 w-10 text-app-accent" />
+                            <h3 className="text-app-title font-medium">
+                                {t('media.format_not_playable', { format: fileFormatLabel(file.name, file.mime_type) })}
+                            </h3>
+                            <p className="text-metadata leading-relaxed text-white/60">
+                                {t('media.format_not_playable_hint')}
+                            </p>
+                            {onDownload && (
+                                <button
+                                    type="button"
+                                    className="viewer-control mt-1 gap-1.5 px-3 text-metadata"
+                                    onClick={() => onDownload(file)}
+                                >
+                                    <Download className="h-4 w-4" />
+                                    {t('files.download')}
+                                </button>
+                            )}
                         </div>
                     ) : isVideo ? (
                         <video

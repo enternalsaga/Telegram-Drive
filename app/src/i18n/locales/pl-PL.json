@@ -490,6 +490,12 @@
     "drop_hint_few": "Zwolnij do kolejki pliki {{count}}",
     "drop_hint_many": "Zwolnij do kolejki pliki {{count}}"
   },
+  "media": {
+    "format_not_playable": "Nie można odtworzyć {{format}} w aplikacji",
+    "format_not_playable_hint": "Wbudowany odtwarzacz nie obsługuje tego kontenera. Pobierz plik i odtwórz go w odtwarzaczu multimedialnym na urządzeniu.",
+    "format_not_previewable": "Aplikacja nie może otworzyć obrazów {{format}}. Pobierz plik, aby go obejrzeć.",
+    "preview_quality_only": "Obrazów {{format}} nie można otworzyć tutaj w pełnym rozmiarze. To podgląd z Telegrama."
+  },
   "archive": {
     "archive_viewer": "Przeglądarka archiwum",
     "extract": "Ekstrakt",

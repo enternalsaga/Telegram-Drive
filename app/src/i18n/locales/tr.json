@@ -486,6 +486,12 @@
     "drop_browser_help": "Dosya bırakmak için masaüstü uygulamasını kullanın veya yükleme iletişim kutusunu açın.",
     "open_upload_dialog": "Yükleme iletişim kutusunu aç"
   },
+  "media": {
+    "format_not_playable": "{{format}} uygulamada oynatılamıyor",
+    "format_not_playable_hint": "Yerleşik oynatıcı bu kapsayıcıyı açamıyor. Dosyayı indirip cihazınızdaki bir medya oynatıcıda açın.",
+    "format_not_previewable": "Uygulama {{format}} görsellerini açamıyor. Görüntülemek için dosyayı indirin.",
+    "preview_quality_only": "{{format}} görselleri burada tam boyutta açılamıyor. Bu, Telegram önizlemesidir."
+  },
   "archive": {
     "archive_viewer": "Arşiv Görüntüleyici",
     "extract": "Çıkart",

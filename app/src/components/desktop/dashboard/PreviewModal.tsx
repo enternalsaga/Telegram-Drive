@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, File, Maximize, Scan, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, File, Maximize, Scan, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import { TelegramFile } from '../../../types';
-import { isImageFile } from '../../../utils';
+import { canRenderImageInApp, fileFormatLabel, isImageFile } from '../../../utils';
 import { useSettings } from '../../../context/SettingsContext';
 import { userFacingError } from '../../../services/userFacingError';
 import {
@@ -50,6 +50,7 @@ interface PreviewModalProps {
     nextFile?: TelegramFile | null;
     prevFile?: TelegramFile | null;
     activeFolderId: number | null;
+    onDownload?: (file: TelegramFile) => void;
 }
 
 export function PreviewModal({
@@ -61,6 +62,7 @@ export function PreviewModal({
     totalItems,
     nextFile,
     activeFolderId,
+    onDownload,
 }: PreviewModalProps) {
     const { t } = useTranslation();
     const { settings } = useSettings();
@@ -71,9 +73,16 @@ export function PreviewModal({
     const [progress, setProgress] = useState(0);
     const [error, setError] = useState<string | null>(null);
     const latestRequestRef = useRef(0);
+    const [fullUnavailable, setFullUnavailable] = useState(false);
     const currentFileIdRef = useRef(file.id);
     currentFileIdRef.current = file.id;
-    const imagePreview = isImageFile(file.name);
+    const imagePreview = isImageFile(file.name, file.mime_type);
+    // HEIC/HEIF/TIFF reach the viewer as images, but no WebView decodes them.
+    // The Telegram thumbnail stands in for the original instead of a hard error.
+    const rendersFullImage = imagePreview
+        && canRenderImageInApp(file.name, file.mime_type)
+        && !fullUnavailable;
+    const showsThumbnailInstead = imagePreview && !rendersFullImage;
     const imageViewportRef = useRef<HTMLDivElement>(null);
     const fullImageRef = useRef<HTMLImageElement>(null);
     const [imageTransform, setImageTransform] = useState<ImageTransform>({ zoom: 1, pan: { x: 0, y: 0 } });
@@ -185,10 +194,12 @@ export function PreviewModal({
         const cachedThumbnail = imagePreview
             ? getCachedThumbnail(file.id, activeFolderId)
             : null;
+        const decodableInApp = !imagePreview || canRenderImageInApp(file.name, file.mime_type);
 
         setThumbnailSrc(cachedThumbnail);
         setFullSrc(cachedPreview);
         setFullReady(false);
+        setFullUnavailable(false);
         setLoading(true);
         setProgress(cachedPreview ? 100 : 0);
         setError(null);
@@ -204,7 +215,15 @@ export function PreviewModal({
                 }
             }).catch(() => {
                 // The full-resolution preview can still load without a thumbnail.
+            }).finally(() => {
+                if (requestId === latestRequestRef.current && !decodableInApp) setLoading(false);
             });
+        }
+
+        // Downloading the original is pointless when nothing on the page can decode it.
+        if (!decodableInApp) {
+            setLoading(imagePreview && !cachedThumbnail);
+            return;
         }
 
         loadPreview(file.id, activeFolderId).then((src) => {
@@ -221,12 +240,12 @@ export function PreviewModal({
             setError(userFacingError(loadError, t));
             setLoading(false);
         });
-    }, [file.id, file.name, activeFolderId, imagePreview, fitImage]);
+    }, [file.id, file.name, file.mime_type, activeFolderId, imagePreview, fitImage]);
 
     // Prefetch only the likely next image, after the current one is fully decoded and
     // the browser is idle. Avoid speculative downloads when a bandwidth cap is active.
     useEffect(() => {
-        if (!fullReady || !nextFile || !isImageFile(nextFile.name)) return;
+        if (!fullReady || !nextFile || !canRenderImageInApp(nextFile.name, nextFile.mime_type)) return;
         if (nextFile.size > MAX_PREFETCH_BYTES) return;
         if (settings.vpnMode && settings.bandwidthLimitDownKBs > 0) return;
         const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
@@ -483,9 +502,9 @@ export function PreviewModal({
                             <img
                                 src={thumbnailSrc}
                                 decoding="async"
-                                className="pointer-events-none max-h-full max-w-full scale-[1.01] select-none bg-black object-contain blur-[2px]"
-                                alt=""
-                                aria-hidden="true"
+                                className={`pointer-events-none max-h-full max-w-full select-none bg-black object-contain ${showsThumbnailInstead ? '' : 'scale-[1.01] blur-[2px]'}`}
+                                alt={showsThumbnailInstead ? file.name : ''}
+                                aria-hidden={showsThumbnailInstead ? undefined : 'true'}
                                 draggable={false}
                                 onError={() => {
                                     forgetThumbnail(file.id, activeFolderId);
@@ -494,7 +513,28 @@ export function PreviewModal({
                             />
                         )}
 
-                        {fullSrc && (
+                        {showsThumbnailInstead && !loading && (
+                            <div className="viewer-toolbar absolute bottom-4 max-w-[min(80vw,32rem)] flex-col gap-2 px-4 py-3 text-center text-white">
+                                <p className="text-metadata leading-relaxed text-white/75">
+                                    {t(
+                                        thumbnailSrc ? 'media.preview_quality_only' : 'media.format_not_previewable',
+                                        { format: fileFormatLabel(file.name, file.mime_type) },
+                                    )}
+                                </p>
+                                {onDownload && (
+                                    <button
+                                        type="button"
+                                        className="viewer-control gap-1.5 px-3 text-metadata"
+                                        onClick={() => onDownload(file)}
+                                    >
+                                        <Download className="h-4 w-4" />
+                                        {t('files.download')}
+                                    </button>
+                                )}
+                            </div>
+                        )}
+
+                        {rendersFullImage && fullSrc && (
                             <img
                                 ref={fullImageRef}
                                 src={fullSrc}
@@ -525,8 +565,14 @@ export function PreviewModal({
                                 }}
                                 onError={() => {
                                     forgetPreview(file.id, activeFolderId);
-                                    setError('Failed to render image preview');
                                     setLoading(false);
+                                    // A codec the WebView rejected is not a failure while the
+                                    // Telegram thumbnail can still stand in for the original.
+                                    if (getCachedThumbnail(file.id, activeFolderId) || thumbnailSrc) {
+                                        setFullUnavailable(true);
+                                        return;
+                                    }
+                                    setError('Failed to render image preview');
                                 }}
                             />
                         )}

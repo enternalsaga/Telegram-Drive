@@ -486,6 +486,12 @@
     "drop_browser_help": "请使用桌面应用拖放文件，或打开上传对话框。",
     "open_upload_dialog": "打开上传对话框"
   },
+  "media": {
+    "format_not_playable": "应用内无法播放 {{format}}",
+    "format_not_playable_hint": "内置播放器无法打开该封装格式。请下载文件后用设备上的媒体播放器播放。",
+    "format_not_previewable": "应用无法打开 {{format}} 图片，请下载文件后查看。",
+    "preview_quality_only": "此处无法以原始尺寸打开 {{format}} 图片，当前显示的是 Telegram 预览图。"
+  },
   "archive": {
     "archive_viewer": "压缩包查看器",
     "extract": "解压",

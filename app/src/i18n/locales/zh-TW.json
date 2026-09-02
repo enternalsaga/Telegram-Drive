@@ -486,6 +486,12 @@
     "drop_browser_help": "使用桌面應用程式進行檔案投放，或開啟上傳對話方塊。",
     "open_upload_dialog": "開啟上傳對話框"
   },
+  "media": {
+    "format_not_playable": "應用程式內無法播放 {{format}}",
+    "format_not_playable_hint": "內建播放器無法開啟此封裝格式。請下載檔案後用裝置上的媒體播放器播放。",
+    "format_not_previewable": "應用程式無法開啟 {{format}} 圖片，請下載檔案後檢視。",
+    "preview_quality_only": "此處無法以原始尺寸開啟 {{format}} 圖片，目前顯示的是 Telegram 預覽圖。"
+  },
   "archive": {
     "archive_viewer": "檔案檢視器",
     "extract": "摘錄",

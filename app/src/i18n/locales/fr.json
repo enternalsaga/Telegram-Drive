@@ -486,6 +486,12 @@
     "drop_browser_help": "Utilisez l'application de bureau pour déposer des fichiers ou ouvrez la boîte de dialogue d'envoi.",
     "open_upload_dialog": "Ouvrir la boîte de dialogue d'envoi"
   },
+  "media": {
+    "format_not_playable": "Impossible de lire {{format}} dans l'application",
+    "format_not_playable_hint": "Le lecteur intégré ne peut pas ouvrir ce conteneur. Téléchargez le fichier et lisez-le avec un lecteur multimédia de votre appareil.",
+    "format_not_previewable": "L'application ne peut pas ouvrir les images {{format}}. Téléchargez le fichier pour le consulter.",
+    "preview_quality_only": "Les images {{format}} ne peuvent pas être ouvertes en taille réelle ici. Ceci est l'aperçu Telegram."
+  },
   "archive": {
     "archive_viewer": "Lecteur d'archive",
     "extract": "Extraire",

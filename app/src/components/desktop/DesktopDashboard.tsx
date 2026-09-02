@@ -592,7 +592,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
         setPreviewContextFiles(contextFiles);
         setPreviewContextIndex(contextIndex);
 
-        const isMedia = isMediaFile(file.name);
+        const isMedia = isMediaFile(file.name, file.mime_type);
         const isPdf = isPdfFile(file.name);
         const isArchive = isArchiveFile(file.name);
 
@@ -634,7 +634,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
 
         setPreviewContextIndex(nextIndex);
 
-        const isMedia = isMediaFile(nextFile.name);
+        const isMedia = isMediaFile(nextFile.name, nextFile.mime_type);
         const isPdf = isPdfFile(nextFile.name);
         const isArchive = isArchiveFile(nextFile.name);
 
@@ -915,6 +915,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                             currentIndex={previewContextIndex}
                             totalItems={previewContextFiles.length}
                             activeFolderId={playingFile.folder_id ?? activeFolderId}
+                            onDownload={(target) => queueDownload(target.id, target.name, target.folder_id ?? activeFolderId, target.size)}
                         />
                     </LazyFeatureBoundary>
                 )}
@@ -1058,6 +1059,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                         totalItems={previewContextFiles.length}
                         nextFile={previewNeighbors.nextFile}
                         prevFile={previewNeighbors.prevFile}
+                        onDownload={(target) => queueDownload(target.id, target.name, target.folder_id ?? activeFolderId, target.size)}
                     />
                 </LazyFeatureBoundary>
             )}

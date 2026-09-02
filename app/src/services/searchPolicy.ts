@@ -3,9 +3,9 @@ export type SearchSizeFacet = 'any' | 'small' | 'medium' | 'large';
 export type SearchDateFacet = 'any' | '7d' | '30d' | '1y';
 
 const EXTENSIONS_BY_TYPE: Readonly<Record<Exclude<SearchTypeFacet, 'all' | 'other'>, readonly string[]>> = {
-  image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'avif', 'svg'],
-  video: ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'],
-  audio: ['mp3', 'm4a', 'wav', 'flac', 'aac', 'ogg', 'opus'],
+  image: ['jpg', 'jpeg', 'jfif', 'png', 'apng', 'gif', 'webp', 'avif', 'bmp', 'svg', 'ico', 'heic', 'heif', 'tif', 'tiff'],
+  video: ['mp4', 'm4v', 'mov', 'mkv', 'webm', 'ogv', 'avi', 'wmv', 'flv', 'mpg', 'mpeg', 'm2ts', '3gp', '3g2'],
+  audio: ['mp3', 'm4a', 'wav', 'flac', 'aac', 'ogg', 'oga', 'opus', 'weba'],
   document: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'md', 'rtf', 'csv'],
   archive: ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz'],
 };

@@ -1154,13 +1154,23 @@ async fn stream_media(
     }
 }
 
+/// Content-Type for a streamed message.
+///
+/// Telegram's own MIME type wins when it carries format information. Documents
+/// uploaded by other clients frequently arrive as `application/octet-stream`,
+/// which makes `<video>` and `<img>` refuse the response, so the filename
+/// decides in that case.
 fn mime_type_from_media(media: &Media) -> String {
     match media {
-        Media::Document(d) => d
-            .mime_type()
-            .unwrap_or("application/octet-stream")
-            .to_string(),
-        _ => "application/octet-stream".to_string(),
+        Media::Document(document) => {
+            let reported = document.mime_type().unwrap_or_default();
+            if !crate::media_types::is_generic_mime(reported) {
+                return reported.to_string();
+            }
+            crate::media_types::mime_for_path(document.name()).to_string()
+        }
+        Media::Photo(_) => "image/jpeg".to_string(),
+        _ => crate::media_types::GENERIC_MIME.to_string(),
     }
 }
 

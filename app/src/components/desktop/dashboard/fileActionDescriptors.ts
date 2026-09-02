@@ -20,7 +20,7 @@ export function describeFileActions(file: TelegramFile): FileActionDescriptor {
     canRename: !isFolder,
     previewAction: isFolder
       ? 'open'
-      : isMediaFile(file.name)
+      : isMediaFile(file.name, file.mime_type)
         ? 'play'
         : isPdfFile(file.name)
           ? 'view_pdf'

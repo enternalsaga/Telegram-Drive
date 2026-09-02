@@ -486,6 +486,12 @@
     "drop_browser_help": "Use o aplicativo para desktop para soltar arquivos ou abra a janela de envio.",
     "open_upload_dialog": "Abrir janela de envio"
   },
+  "media": {
+    "format_not_playable": "Não é possível reproduzir {{format}} no aplicativo",
+    "format_not_playable_hint": "O reprodutor integrado não consegue abrir este contêiner. Baixe o arquivo e reproduza em um reprodutor de mídia do seu dispositivo.",
+    "format_not_previewable": "O aplicativo não consegue abrir imagens {{format}}. Baixe o arquivo para visualizá-lo.",
+    "preview_quality_only": "Imagens {{format}} não podem ser abertas em tamanho original aqui. Esta é a prévia do Telegram."
+  },
   "archive": {
     "archive_viewer": "Visualizador de arquivos compactados",
     "extract": "Extrair",

@@ -486,6 +486,12 @@
     "drop_browser_help": "파일을 놓으려면 데스크톱 앱을 사용하거나 업로드 대화 상자를 여세요.",
     "open_upload_dialog": "업로드 대화 상자 열기"
   },
+  "media": {
+    "format_not_playable": "{{format}} 파일은 앱에서 재생할 수 없습니다",
+    "format_not_playable_hint": "내장 플레이어가 이 컨테이너를 열 수 없습니다. 파일을 내려받아 기기의 미디어 플레이어에서 재생하세요.",
+    "format_not_previewable": "앱에서 {{format}} 이미지를 열 수 없습니다. 파일을 내려받아 확인하세요.",
+    "preview_quality_only": "{{format}} 이미지는 여기서 원본 크기로 열 수 없습니다. Telegram 미리보기입니다."
+  },
   "archive": {
     "archive_viewer": "압축 파일 뷰어",
     "extract": "압축 풀기",

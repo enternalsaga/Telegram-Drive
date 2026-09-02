@@ -486,6 +486,12 @@
     "drop_browser_help": "Verwende die Desktop-App zum Ablegen von Dateien oder öffne den Upload-Dialog.",
     "open_upload_dialog": "Upload-Dialog öffnen"
   },
+  "media": {
+    "format_not_playable": "{{format}} kann in der App nicht abgespielt werden",
+    "format_not_playable_hint": "Der integrierte Player kann dieses Containerformat nicht öffnen. Lade die Datei herunter und spiele sie in einem Medienplayer auf deinem Gerät ab.",
+    "format_not_previewable": "Die App kann {{format}}-Bilder nicht öffnen. Lade die Datei herunter, um sie anzusehen.",
+    "preview_quality_only": "{{format}}-Bilder können hier nicht in voller Größe geöffnet werden. Dies ist die Telegram-Vorschau."
+  },
   "archive": {
     "archive_viewer": "Archiv-Viewer",
     "extract": "Entpacken",

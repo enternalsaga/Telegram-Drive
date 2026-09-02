@@ -486,6 +486,12 @@
     "drop_browser_help": "Gunakan aplikasi desktop untuk melepas file atau buka dialog unggah.",
     "open_upload_dialog": "Buka dialog unggah"
   },
+  "media": {
+    "format_not_playable": "Tidak dapat memutar {{format}} di aplikasi",
+    "format_not_playable_hint": "Pemutar bawaan tidak dapat membuka kontainer ini. Unduh berkasnya dan putar dengan pemutar media di perangkat Anda.",
+    "format_not_previewable": "Aplikasi tidak dapat membuka gambar {{format}}. Unduh berkasnya untuk melihatnya.",
+    "preview_quality_only": "Gambar {{format}} tidak dapat dibuka dalam ukuran penuh di sini. Ini adalah pratinjau Telegram."
+  },
   "archive": {
     "archive_viewer": "Penampil Arsip",
     "extract": "Ekstrak",

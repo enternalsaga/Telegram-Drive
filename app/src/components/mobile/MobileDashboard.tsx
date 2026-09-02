@@ -710,7 +710,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
       setPlayingFile(file);
     } else if (isPdfFile(file.name)) {
       setPdfFile(file);
-    } else if (isImageFile(file.name)) {
+    } else if (isImageFile(file.name, file.mime_type)) {
       setPreviewFile(file);
     } else {
       toast.info(`Preview not supported for ${file.name}`);
@@ -1672,6 +1672,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             file={previewFile}
             activeFolderId={activeFolderId}
             onClose={() => setPreviewFile(null)}
+            onDownload={handleDownload}
           />
         </LazyFeatureBoundary>
       )}
