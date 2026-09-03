@@ -104,8 +104,17 @@ jobs:
           password="$(strip "$TEST_APK_KEYSTORE_PASSWORD")"
           test -n "$alias"
           test -n "$password"
-          printf '%s' "$TEST_APK_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 --decode > "$RUNNER_TEMP/test-signing.jks"
+          blob="$(printf '%s' "$TEST_APK_KEYSTORE_BASE64" | tr -d '\r\n ')"
+          # Diagnostics that reveal nothing: length, character class, and the
+          # decoded file's format byte (0x30 = PKCS12, 0xfe = JKS).
+          echo "keystore secret: ${#blob} characters after stripping line endings"
+          if ! printf '%s' "$blob" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
+            echo "::error::TEST_APK_KEYSTORE_BASE64 contains characters outside the base64 alphabet; re-set it with: gh secret set TEST_APK_KEYSTORE_BASE64 --body ([Convert]::ToBase64String([IO.File]::ReadAllBytes('path\to\keystore')))"
+            exit 1
+          fi
+          printf '%s' "$blob" | base64 --decode > "$RUNNER_TEMP/test-signing.jks"
           test -s "$RUNNER_TEMP/test-signing.jks"
+          echo "decoded keystore: $(wc -c < "$RUNNER_TEMP/test-signing.jks") bytes, format byte 0x$(head -c1 "$RUNNER_TEMP/test-signing.jks" | od -An -tx1 | tr -d ' ')"
           printf 'keyAlias=%s\nkeyPassword=%s\nstorePassword=%s\nstoreFile=%s\n' \
             "$alias" "$password" "$password" \
             "$RUNNER_TEMP/test-signing.jks" \
