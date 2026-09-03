@@ -73,16 +73,15 @@ export function PreviewModal({
     const [progress, setProgress] = useState(0);
     const [error, setError] = useState<string | null>(null);
     const latestRequestRef = useRef(0);
-    const [fullUnavailable, setFullUnavailable] = useState(false);
     const currentFileIdRef = useRef(file.id);
     currentFileIdRef.current = file.id;
     const imagePreview = isImageFile(file.name, file.mime_type);
     // HEIC/HEIF/TIFF reach the viewer as images, but no WebView decodes them.
     // The Telegram thumbnail stands in for the original instead of a hard error.
-    const rendersFullImage = imagePreview
-        && canRenderImageInApp(file.name, file.mime_type)
-        && !fullUnavailable;
-    const showsThumbnailInstead = imagePreview && !rendersFullImage;
+    // Only the format decides this: a decodable image that fails to load is a
+    // real failure and must not be reported as an unsupported format.
+    const showsThumbnailInstead = imagePreview && !canRenderImageInApp(file.name, file.mime_type);
+    const rendersFullImage = imagePreview && !showsThumbnailInstead;
     const imageViewportRef = useRef<HTMLDivElement>(null);
     const fullImageRef = useRef<HTMLImageElement>(null);
     const [imageTransform, setImageTransform] = useState<ImageTransform>({ zoom: 1, pan: { x: 0, y: 0 } });
@@ -199,7 +198,6 @@ export function PreviewModal({
         setThumbnailSrc(cachedThumbnail);
         setFullSrc(cachedPreview);
         setFullReady(false);
-        setFullUnavailable(false);
         setLoading(true);
         setProgress(cachedPreview ? 100 : 0);
         setError(null);
@@ -565,14 +563,8 @@ export function PreviewModal({
                                 }}
                                 onError={() => {
                                     forgetPreview(file.id, activeFolderId);
-                                    setLoading(false);
-                                    // A codec the WebView rejected is not a failure while the
-                                    // Telegram thumbnail can still stand in for the original.
-                                    if (getCachedThumbnail(file.id, activeFolderId) || thumbnailSrc) {
-                                        setFullUnavailable(true);
-                                        return;
-                                    }
                                     setError('Failed to render image preview');
+                                    setLoading(false);
                                 }}
                             />
                         )}

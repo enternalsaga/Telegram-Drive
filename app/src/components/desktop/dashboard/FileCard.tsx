@@ -10,7 +10,7 @@ import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
 import { Skeleton } from '../../ui';
 import { EncryptionBadge } from '../../shared/EncryptionBadge';
 import { describeFileActions } from './fileActionDescriptors';
-import { isImageFile } from '../../../utils';
+import { isImageFile, isVideoFile } from '../../../utils';
 import i18n from '../../../i18n';
 
 interface FileCardProps {
@@ -76,9 +76,14 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
     );
     const cachedQualities = (cachedVariants || []).filter(v => v.available).map(v => v.quality);
 
-    // Lazy load thumbnail for image files
+    // Telegram stores a poster frame for video documents just as it does for
+    // images, so both kinds can show one.
+    const hasPoster = !isFolder
+        && (isImageFile(file.name, file.mime_type) || isVideoFile(file.name, file.mime_type));
+
+    // Lazy load the poster for image and video files
     useEffect(() => {
-        if (isFolder || !isImageFile(file.name, file.mime_type)) return;
+        if (!hasPoster) return;
 
         let cancelled = false;
         const cached = getCachedThumbnail(file.id, activeFolderId);
@@ -98,7 +103,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
         });
 
         return () => { cancelled = true; };
-    }, [file.id, file.name, file.mime_type, activeFolderId, isFolder]);
+    }, [file.id, hasPoster, activeFolderId]);
 
     return (
         <div
@@ -116,7 +121,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                 className={`group relative h-full w-full min-w-0 cursor-pointer overflow-hidden rounded-container border transition-[border-color,background-color,box-shadow]
                 ${isSelected ? 'border-app-accent bg-app-selected ring-1 ring-app-accent' : 'border-transparent bg-app-surface/45 hover:border-app-border hover:bg-app-surface/70'}
                 ${isFileDragOver ? 'bg-app-selected ring-2 ring-app-accent' : ''}`}
-                style={height ? { height: `${height}px` } : { aspectRatio: '4/3' }}
+                style={height ? { height: `${height}px` } : { aspectRatio: '1/1' }}
             >
                 {/* Thumbnail or Icon */}
                 {thumbnail ? (
@@ -127,7 +132,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                             alt={file.name}
                             loading="lazy"
                             decoding="async"
-                            className={`h-full w-full object-cover transition-opacity duration-300 motion-reduce:transition-none ${thumbnailReady ? 'opacity-100' : 'opacity-0'}`}
+                            className={`h-full w-full object-contain transition-opacity duration-300 motion-reduce:transition-none ${thumbnailReady ? 'opacity-100' : 'opacity-0'}`}
                             onLoad={() => setThumbnailReady(true)}
                             onError={() => {
                                 forgetThumbnail(file.id, activeFolderId);
@@ -142,7 +147,7 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
                     <div className="file-card-icon absolute inset-x-0 bottom-12 top-0 flex items-center justify-center p-3">
                         {isFolder ? (
                             <Folder className="h-10 w-10 max-h-full max-w-full shrink-0 text-app-accent" strokeWidth={1.6} />
-                        ) : thumbnailLoading && isImageFile(file.name, file.mime_type) ? (
+                        ) : thumbnailLoading && hasPoster ? (
                             <Skeleton className="h-10 w-10 shrink-0" />
                         ) : (
                             <FileTypeIcon filename={file.name} size="lg" className="h-10 w-10 max-h-full max-w-full shrink-0" />

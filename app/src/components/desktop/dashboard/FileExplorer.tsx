@@ -101,7 +101,7 @@ export function FileExplorer({
     const columns = Math.min(desiredColumns, safeColumns);
 
     const cardWidth = (containerWidth - (GRID_GAP * (columns - 1))) / columns;
-    const cardHeight = Math.max(MIN_CARD_HEIGHT, cardWidth * 0.75); // 4:3 until the protected minimum
+    const cardHeight = Math.max(MIN_CARD_HEIGHT, cardWidth); // square until the protected minimum
 
     const handleContextMenu = useCallback((e: React.MouseEvent, file: TelegramFile) => {
         e.preventDefault();

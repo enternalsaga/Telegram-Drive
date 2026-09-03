@@ -160,6 +160,17 @@ mod tests {
     }
 
     #[test]
+    fn separates_still_images_from_video_by_reported_type_or_name() {
+        // The thumbnail fallback downloads the original, so misclassifying a
+        // video here would pull a whole movie to build one card image.
+        assert!(mime_for_path("holiday.webp").starts_with("image/"));
+        assert!(mime_for_path("holiday.heic").starts_with("image/"));
+        assert!(!mime_for_path("clip.webm").starts_with("image/"));
+        assert!(!mime_for_path("clip.mkv").starts_with("image/"));
+        assert!(!mime_for_path("movie-without-extension").starts_with("image/"));
+    }
+
+    #[test]
     fn maps_telegram_mime_types_back_to_cache_extensions() {
         assert_eq!(extension_for_mime("image/webp"), Some("webp"));
         assert_eq!(extension_for_mime("video/webm"), Some("webm"));

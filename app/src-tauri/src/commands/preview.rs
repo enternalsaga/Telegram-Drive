@@ -39,6 +39,26 @@ pub const THUMBNAIL_EXTS: &[&str] = &[
 const PREVIEW_CACHE_MAX_FILES: usize = 30;
 const PREVIEW_CACHE_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 static PREVIEW_CACHE_LIMIT_BYTES: AtomicU64 = AtomicU64::new(PREVIEW_CACHE_MAX_TOTAL_BYTES);
+/// A `.part` file younger than this may still belong to a running transfer.
+/// Pruning is spawned after every completed download, so a grid loading many
+/// thumbnails at once has several prunes racing several in-flight writes:
+/// deleting a fresh partial destroys another request's work.
+const ABANDONED_PARTIAL_AFTER: Duration = Duration::from_secs(60 * 60);
+/// Android keeps partials far longer so an interrupted transfer can resume at a
+/// Telegram chunk boundary after process death.
+#[cfg(target_os = "android")]
+const RESUMABLE_PARTIAL_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Whether a partial file is old enough that no transfer can still be writing it.
+fn partial_is_abandoned(entry: &std::fs::DirEntry, retain_for: Duration) -> bool {
+    entry
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age >= retain_for)
+}
+
 const THUMBNAIL_CACHE_MAX_FILES: usize = 500;
 const THUMBNAIL_CACHE_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const THUMBNAIL_MAX_DIMENSION: u32 = 1024;
@@ -166,6 +186,150 @@ fn media_extension(media: &Media) -> String {
     }
 }
 
+/// Effective MIME type for media. Telegram's own type wins when it carries
+/// format information; documents uploaded by other clients arrive as
+/// `application/octet-stream`, so the filename decides for those.
+fn effective_mime(media: &Media) -> &str {
+    match media {
+        Media::Photo(_) => "image/jpeg",
+        Media::Document(document) => {
+            let reported = document.mime_type().unwrap_or_default();
+            if !crate::media_types::is_generic_mime(reported) {
+                return reported;
+            }
+            crate::media_types::mime_for_path(document.name())
+        }
+        _ => crate::media_types::GENERIC_MIME,
+    }
+}
+
+/// Whether a thumbnail can be derived by decoding the original as an image.
+fn media_is_still_image(media: &Media) -> bool {
+    effective_mime(media).starts_with("image/")
+}
+
+fn media_is_video(media: &Media) -> bool {
+    effective_mime(media).starts_with("video/")
+}
+
+/// Cap on concurrent ffmpeg poster jobs. A folder of videos would otherwise
+/// start one process per visible card and saturate both CPU and the Telegram
+/// connection.
+static POSTER_SLOTS: LazyLock<tokio::sync::Semaphore> =
+    LazyLock::new(|| tokio::sync::Semaphore::new(2));
+
+/// Offsets to sample, in order. The opening frame is often black or a fade-in,
+/// so a short offset gives a more representative card; the zero offset is the
+/// retry for clips shorter than that.
+const POSTER_SEEK_OFFSETS: &[&str] = &["1", "0"];
+/// A stalled Telegram range request must not leave an ffmpeg process resident.
+const POSTER_RENDER_TIMEOUT: Duration = Duration::from_secs(30);
+/// Windows spawns a console window for a console child unless told otherwise,
+/// which would flash once per video card.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Render a card poster from an early frame of a video using ffmpeg.
+///
+/// ffmpeg reads through the local streaming server, which answers HTTP range
+/// requests, so only the bytes needed to decode one frame are pulled from
+/// Telegram instead of the whole file. Returns `None` when the frame cannot be
+/// produced; the caller then leaves the card on its file-type icon.
+async fn render_video_poster(
+    ffmpeg: &Path,
+    stream_url: &str,
+    destination_path: &Path,
+) -> Option<PathBuf> {
+    let _slot = POSTER_SLOTS.acquire().await.ok()?;
+
+    for seek in POSTER_SEEK_OFFSETS {
+        let unique_id = rand::rng().random::<u64>();
+        let frame_path = destination_path.with_extension(format!("frame_{}.part", unique_id));
+
+        let mut command = tokio::process::Command::new(ffmpeg);
+        command
+            .arg("-nostdin")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-y")
+            // Seeking before -i lets ffmpeg jump with range requests rather than
+            // decoding everything up to the offset.
+            .arg("-ss")
+            .arg(seek)
+            .arg("-i")
+            .arg(stream_url)
+            .arg("-frames:v")
+            .arg("1")
+            .arg("-an")
+            .arg("-sn")
+            .arg("-dn")
+            .arg("-f")
+            .arg("image2")
+            .arg("-c:v")
+            .arg("mjpeg")
+            .arg("-q:v")
+            .arg("3")
+            .arg(&frame_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            // Dropping the future on timeout must not leave ffmpeg resident.
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(CREATE_NO_WINDOW);
+
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                log::warn!("Could not start ffmpeg for a video poster: {}", error);
+                return None;
+            }
+        };
+
+        let rendered =
+            match tokio::time::timeout(POSTER_RENDER_TIMEOUT, child.wait_with_output()).await {
+                Ok(Ok(output)) if output.status.success() => true,
+                Ok(Ok(output)) => {
+                    log::warn!(
+                        "ffmpeg could not render a poster at {}s ({}): {}",
+                        seek,
+                        output.status,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                    false
+                }
+                Ok(Err(error)) => {
+                    log::warn!("ffmpeg poster process failed: {}", error);
+                    false
+                }
+                Err(_) => {
+                    log::warn!(
+                        "ffmpeg poster timed out after {}s",
+                        POSTER_RENDER_TIMEOUT.as_secs()
+                    );
+                    false
+                }
+            };
+
+        if rendered && is_nonempty_file(&frame_path).await {
+            let normalized =
+                create_resized_thumbnail(frame_path.clone(), destination_path.to_path_buf()).await;
+            let _ = tokio::fs::remove_file(&frame_path).await;
+            match normalized {
+                Ok(path) => return Some(path),
+                Err(error) => {
+                    log::warn!("Could not normalize a video poster: {}", error);
+                    return None;
+                }
+            }
+        }
+
+        let _ = tokio::fs::remove_file(&frame_path).await;
+    }
+
+    None
+}
+
 #[derive(Clone)]
 struct PreviewProgressContext {
     app_handle: tauri::AppHandle,
@@ -223,19 +387,12 @@ async fn prune_preview_cache(
             let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if fname.ends_with(".part") {
                 #[cfg(target_os = "android")]
-                {
-                    let stale = entry
-                        .metadata()
-                        .ok()
-                        .and_then(|metadata| metadata.modified().ok())
-                        .and_then(|modified| modified.elapsed().ok())
-                        .is_some_and(|age| age >= Duration::from_secs(24 * 60 * 60));
-                    if stale {
-                        let _ = std::fs::remove_file(&path);
-                    }
-                }
+                let retain_for = RESUMABLE_PARTIAL_RETENTION;
                 #[cfg(not(target_os = "android"))]
-                let _ = std::fs::remove_file(&path);
+                let retain_for = ABANDONED_PARTIAL_AFTER;
+                if partial_is_abandoned(&entry, retain_for) {
+                    let _ = std::fs::remove_file(&path);
+                }
             }
         }
 
@@ -255,7 +412,6 @@ async fn prune_preview_cache(
             if path.extension().and_then(|extension| extension.to_str()) == Some("pin") {
                 continue;
             }
-            #[cfg(target_os = "android")]
             if path.extension().and_then(|extension| extension.to_str()) == Some("part") {
                 continue;
             }
@@ -520,7 +676,9 @@ async fn prune_thumbnail_cache(cache_dir: PathBuf, preserve_path: Option<PathBuf
                 .and_then(|name| name.to_str())
                 .unwrap_or("");
             if name.ends_with(".part") {
-                let _ = std::fs::remove_file(path);
+                if partial_is_abandoned(&entry, ABANDONED_PARTIAL_AFTER) {
+                    let _ = std::fs::remove_file(path);
+                }
                 continue;
             }
             if preserve_path
@@ -582,12 +740,18 @@ async fn create_resized_thumbnail(
 
         let unique_id = rand::rng().random::<u64>();
         let temporary_path = destination_path.with_extension(format!("thumb_{}.part", unique_id));
-        let file = std::fs::File::create(&temporary_path)
-            .map_err(|error| format!("Failed to create thumbnail: {}", error))?;
-        let mut encoder = JpegEncoder::new_with_quality(std::io::BufWriter::new(file), 84);
-        encoder
-            .encode_image(&image::DynamicImage::ImageRgb8(rgb))
-            .map_err(|error| format!("Failed to encode thumbnail: {}", error))?;
+        {
+            let file = std::fs::File::create(&temporary_path)
+                .map_err(|error| format!("Failed to create thumbnail: {}", error))?;
+            let mut writer = std::io::BufWriter::new(file);
+            JpegEncoder::new_with_quality(&mut writer, 84)
+                .encode_image(&image::DynamicImage::ImageRgb8(rgb))
+                .map_err(|error| format!("Failed to encode thumbnail: {}", error))?;
+            // Windows refuses to rename a file that still has an open handle, and
+            // an unflushed BufWriter would leave the thumbnail truncated.
+            std::io::Write::flush(&mut writer)
+                .map_err(|error| format!("Failed to flush thumbnail: {}", error))?;
+        }
 
         if destination_path.exists() {
             let _ = std::fs::remove_file(&destination_path);
@@ -1016,8 +1180,9 @@ pub async fn cmd_clean_cache(app_handle: tauri::AppHandle) -> Result<(), String>
 }
 
 /// Get a small thumbnail for inline display in file cards.
-/// Returns a local asset path for images, empty string for non-image files.
+/// Returns a local asset path for images and videos, empty string otherwise.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri injects each piece of managed state as its own argument.
 pub async fn cmd_get_thumbnail(
     message_id: i32,
     folder_id: Option<i64>,
@@ -1026,7 +1191,14 @@ pub async fn cmd_get_thumbnail(
     bw_state: State<'_, Arc<BandwidthManager>>,
     net_config: State<'_, Arc<NetworkConfig>>,
     db_pool: State<'_, DbConnection>,
+    stream_config: State<'_, crate::commands::streaming::StreamConfig>,
+    transcode: State<'_, Arc<crate::transcode::TranscodeManager>>,
 ) -> Result<String, String> {
+    log::debug!(
+        "Thumbnail requested for message {} in folder {:?}",
+        message_id,
+        folder_id
+    );
     if is_registered_encrypted(db_pool.inner().clone(), folder_id, message_id).await? {
         return Ok(String::new());
     }
@@ -1110,13 +1282,13 @@ pub async fn cmd_get_thumbnail(
     let media = message
         .media()
         .ok_or_else(|| "File has no downloadable media".to_string())?;
-    let is_image = match &media {
-        Media::Photo(_) => true,
-        Media::Document(document) => document.mime_type().unwrap_or("").starts_with("image/"),
-        _ => false,
-    };
-    if !is_image {
-        return Ok("".to_string());
+    // Archives, documents and the like have nothing to show on a card, so they
+    // stop here rather than costing a Telegram round trip. Videos continue: they
+    // carry a Telegram poster, and a locally rendered frame stands in when they
+    // do not. Both kinds resolve their type through the filename when Telegram
+    // reports a generic one.
+    if !media_is_still_image(&media) && !media_is_video(&media) {
+        return Ok(String::new());
     }
 
     let thumbnails = match &media {
@@ -1172,6 +1344,44 @@ pub async fn cmd_get_thumbnail(
             prune_thumbnail_cache(prune_dir, Some(preserve_path)).await;
         });
         return Ok(final_path.to_string_lossy().to_string());
+    }
+
+    // Deriving a thumbnail from the original only works for still images, and only
+    // earns its bandwidth for them. A video without a Telegram poster would download
+    // in full — potentially gigabytes — and still fail to decode as an image.
+    if !media_is_still_image(&media) {
+        // Telegram ships a poster for most videos, but documents uploaded by
+        // other clients often carry none. ffmpeg is an optional dependency, so
+        // without it the card simply keeps its file-type icon.
+        if media_is_video(&media) {
+            let ffmpeg = { transcode.ffmpeg_path.lock().await.clone() };
+            log::debug!(
+                "No Telegram poster for message {}; ffmpeg available: {}",
+                message_id,
+                ffmpeg.is_some()
+            );
+            if let Some(ffmpeg) = ffmpeg {
+                let stream_url = format!(
+                    "http://127.0.0.1:{}/stream/{}/{}?token={}",
+                    stream_config.port,
+                    folder_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "home".to_string()),
+                    message_id,
+                    stream_config.token,
+                );
+                if let Some(path) = render_video_poster(&ffmpeg, &stream_url, &optimized_path).await
+                {
+                    let prune_dir = thumbnail_dir.clone();
+                    let preserve_path = path.clone();
+                    tauri::async_runtime::spawn(async move {
+                        prune_thumbnail_cache(prune_dir, Some(preserve_path)).await;
+                    });
+                    return Ok(path.to_string_lossy().to_string());
+                }
+            }
+        }
+        return Ok(String::new());
     }
 
     // Some image documents have no Telegram thumbnail. Download the original once into
@@ -1308,7 +1518,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn offline_cache_pruning_counts_preserved_file_and_removes_parts() {
+    async fn offline_cache_pruning_keeps_live_partials_and_drops_abandoned_ones() {
         let test_dir = std::env::temp_dir().join(format!(
             "telegram_drive_offline_cache_test_{}",
             rand::rng().random::<u64>()
@@ -1319,13 +1529,35 @@ mod tests {
         for index in 2..=31 {
             std::fs::write(test_dir.join(format!("home_{index}.txt")), b"cached").unwrap();
         }
-        std::fs::write(test_dir.join("home_32.txt.part"), b"partial").unwrap();
+
+        // Pruning is spawned after every completed download, so it routinely runs
+        // while other downloads are mid-write. A partial that was just touched
+        // belongs to one of those and must survive.
+        let live_partial = test_dir.join("home_32.txt.part");
+        std::fs::write(&live_partial, b"partial").unwrap();
+
+        // One left behind by an interrupted run must still be reclaimed.
+        let abandoned_partial = test_dir.join("home_33.txt.part");
+        std::fs::write(&abandoned_partial, b"partial").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&abandoned_partial)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
 
         prune_preview_cache(test_dir.clone(), Some(preserved.clone())).await;
         let status = preview_cache_status(&test_dir).await;
 
         assert!(preserved.exists());
-        assert!(!test_dir.join("home_32.txt.part").exists());
+        assert!(
+            live_partial.exists(),
+            "a partial from a running transfer must survive pruning"
+        );
+        assert!(
+            !abandoned_partial.exists(),
+            "a partial left by an interrupted run must be reclaimed"
+        );
         assert_eq!(status.file_count, PREVIEW_CACHE_MAX_FILES);
         assert!(status.total_bytes <= PREVIEW_CACHE_MAX_TOTAL_BYTES);
         let _ = std::fs::remove_dir_all(test_dir);
