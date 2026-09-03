@@ -1001,66 +1001,239 @@ pub async fn cmd_auth_qr_login(
 
     match result {
         tl::enums::auth::LoginToken::Token(t) => {
-            let encoded = URL_SAFE_NO_PAD.encode(&t.token);
-            let url = format!("tg://login?token={}", encoded);
             log::info!("QR login URL generated, expires at {}", t.expires);
-            Ok(url)
+            remember_qr_token();
+            Ok(qr_login_url(&t.token))
         }
         tl::enums::auth::LoginToken::Success(_s) => {
             // Already authorized (e.g. from a previous session)
             log::info!("QR login: already authorized");
+            forget_qr_token();
             Ok("__authorized__".to_string())
         }
         tl::enums::auth::LoginToken::MigrateTo(m) => {
-            log::info!("QR login: need to migrate to DC {}", m.dc_id);
-            let encoded = URL_SAFE_NO_PAD.encode(&m.token);
-            let url = format!("tg://login?token={}", encoded);
-            Ok(url)
+            // A token accepted before a restart can already point at the
+            // account's own data centre; finish there instead of drawing a QR.
+            match complete_qr_login_on_dc(&client, &state, m.dc_id, m.token).await? {
+                QrPollResult {
+                    success: true,
+                    next_step: Some(step),
+                    ..
+                } if step == "password" => Ok("__password__".to_string()),
+                QrPollResult { success: true, .. } => Ok("__authorized__".to_string()),
+                _ => Err("Telegram did not finish the QR sign-in.".to_string()),
+            }
         }
     }
 }
 
-/// QR Login -- Step 2: Poll for scan completion.
-/// Checks if the session became authorized after the user scanned the QR code.
+/// Finish a QR sign-in for an account that lives on another data centre.
 ///
-/// IMPORTANT: We must NOT call auth.exportLoginToken here for polling.
-/// Each call to exportLoginToken generates a NEW token and invalidates the
-/// previous one, causing the scanned QR code to fail with "Invalid code".
-/// Instead, we check is_authorized() which succeeds once the phone app
-/// accepts the token via auth.acceptLoginToken.
+/// `auth.exportLoginToken` answers `loginTokenMigrateTo` once the phone has
+/// accepted a token for such an account. The token must then be imported on
+/// that DC, which is the one that issues the authorization, and the session's
+/// home DC has to move there so every later request follows the account.
+async fn complete_qr_login_on_dc(
+    client: &Client,
+    state: &TelegramState,
+    dc_id: i32,
+    token: Vec<u8>,
+) -> Result<QrPollResult, String> {
+    let session = state
+        .session
+        .lock()
+        .await
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "Telegram session is not initialized.".to_string())?;
+    // Move home first: even a failed import leaves the account on that DC, so
+    // retries and the two-step password check belong there too.
+    session.set_home_dc_id(dc_id);
+    log::info!("QR login: importing accepted token on DC {}", dc_id);
+
+    let imported = timeout(
+        Duration::from_secs(30),
+        client.invoke_in_dc(dc_id, &tl::functions::auth::ImportLoginToken { token }),
+    )
+    .await
+    .map_err(|_| "Telegram did not respond while finishing QR sign-in.".to_string())?;
+
+    match imported {
+        Ok(tl::enums::auth::LoginToken::Success(_)) => {
+            log::info!("QR login: authorized on DC {}", dc_id);
+            *state.phone_login.lock().await = None;
+            forget_qr_token();
+            Ok(QrPollResult::done("dashboard"))
+        }
+        Ok(tl::enums::auth::LoginToken::MigrateTo(next)) => {
+            log::warn!(
+                "QR login: DC {} redirected the import to DC {}",
+                dc_id,
+                next.dc_id
+            );
+            Err("Telegram kept redirecting the QR sign-in between data centres. Use the Phone Number tab instead.".to_string())
+        }
+        Ok(tl::enums::auth::LoginToken::Token(_)) => Err(
+            "Telegram issued a new QR token instead of finishing the sign-in. Scan the code again."
+                .to_string(),
+        ),
+        Err(error) if error.is("SESSION_PASSWORD_NEEDED") => {
+            let password: tl::types::account::Password = timeout(
+                Duration::from_secs(30),
+                client.invoke(&tl::functions::account::GetPassword {}),
+            )
+            .await
+            .map_err(|_| {
+                "Telegram did not respond while requesting two-step verification.".to_string()
+            })?
+            .map_err(map_auth_error)?
+            .into();
+            *state.password_token.lock().await = Some(PasswordToken::new(password));
+            forget_qr_token();
+            Ok(QrPollResult::done("password"))
+        }
+        Err(error) => {
+            log::warn!("QR login import on DC {} failed: {}", dc_id, error);
+            Err(map_auth_error(error))
+        }
+    }
+}
+
+fn qr_login_url(token: &[u8]) -> String {
+    format!("tg://login?token={}", URL_SAFE_NO_PAD.encode(token))
+}
+
+/// When the QR token now on screen was issued.
+///
+/// Completing a QR sign-in requires a second `auth.exportLoginToken`, and that
+/// call also rotates the token. Polling therefore has to space those calls out,
+/// or the code on screen would change faster than a phone can scan it.
+static QR_TOKEN_ISSUED_AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+/// How long a displayed QR code is left alone before polling rotates it. Also
+/// the worst-case delay between a successful scan and the session opening.
+const QR_TOKEN_REFRESH_AFTER: Duration = Duration::from_secs(8);
+
+fn remember_qr_token() {
+    if let Ok(mut issued) = QR_TOKEN_ISSUED_AT.lock() {
+        *issued = Some(Instant::now());
+    }
+}
+
+fn forget_qr_token() {
+    if let Ok(mut issued) = QR_TOKEN_ISSUED_AT.lock() {
+        *issued = None;
+    }
+}
+
+fn qr_token_is_due_for_refresh() -> bool {
+    match QR_TOKEN_ISSUED_AT.lock() {
+        Ok(issued) => issued.is_none_or(|at| at.elapsed() >= QR_TOKEN_REFRESH_AFTER),
+        Err(_) => true,
+    }
+}
+
+/// Result of one QR polling tick.
+#[derive(Debug, serde::Serialize)]
+pub struct QrPollResult {
+    pub success: bool,
+    pub next_step: Option<String>,
+    /// A replacement login URL, set when the poll rotated the token. The caller
+    /// must redraw the QR code, because the previous one is no longer valid.
+    pub qr_url: Option<String>,
+}
+
+impl QrPollResult {
+    fn waiting(qr_url: Option<String>) -> Self {
+        Self {
+            success: false,
+            next_step: Some("waiting".to_string()),
+            qr_url,
+        }
+    }
+
+    fn done(next_step: &str) -> Self {
+        Self {
+            success: true,
+            next_step: Some(next_step.to_string()),
+            qr_url: None,
+        }
+    }
+}
+
+/// QR Login -- Step 2: poll until the scan completes.
+///
+/// Accepting the token on the phone does not by itself authorize this session:
+/// Telegram hands the authorization over only when the client calls
+/// `auth.exportLoginToken` a second time, which then answers with
+/// `auth.loginTokenSuccess`. Polling `is_authorized()` alone therefore waits
+/// forever, even though the phone already lists the session as active.
+///
+/// That second call also issues a fresh token and retires the previous one, so
+/// it is spaced out by `QR_TOKEN_REFRESH_AFTER` and the caller is handed the new
+/// URL to redraw.
 #[tauri::command]
-pub async fn cmd_auth_qr_poll(state: State<'_, TelegramState>) -> Result<AuthResult, String> {
+pub async fn cmd_auth_qr_poll(
+    api_id: i32,
+    api_hash: String,
+    state: State<'_, TelegramState>,
+) -> Result<QrPollResult, String> {
     let client = {
         let guard = state.client.lock().await;
         guard.as_ref().ok_or("Client not initialized")?.clone()
     };
 
-    // Check if the session is now authorized (user scanned QR on phone)
-    match client.is_authorized().await {
-        Ok(true) => {
-            log::info!("QR login: session authorized!");
+    if let Ok(true) = client.is_authorized().await {
+        log::info!("QR login: session authorized");
+        *state.phone_login.lock().await = None;
+        forget_qr_token();
+        return Ok(QrPollResult::done("dashboard"));
+    }
+
+    if !qr_token_is_due_for_refresh() {
+        return Ok(QrPollResult::waiting(None));
+    }
+
+    let exported = client
+        .invoke(&tl::functions::auth::ExportLoginToken {
+            api_id,
+            api_hash,
+            except_ids: vec![],
+        })
+        .await;
+
+    match exported {
+        Ok(tl::enums::auth::LoginToken::Success(_)) => {
+            log::info!("QR login: token accepted, session authorized");
             *state.phone_login.lock().await = None;
-            Ok(AuthResult {
-                success: true,
-                next_step: Some("dashboard".to_string()),
-                error: None,
-            })
+            forget_qr_token();
+            Ok(QrPollResult::done("dashboard"))
         }
-        Ok(false) => {
-            // Not yet scanned or accepted
-            Ok(AuthResult {
-                success: false,
-                next_step: Some("waiting".to_string()),
-                error: None,
-            })
+        Ok(tl::enums::auth::LoginToken::Token(t)) => {
+            remember_qr_token();
+            Ok(QrPollResult::waiting(Some(qr_login_url(&t.token))))
         }
-        Err(e) => {
-            log::warn!("QR poll auth check failed: {}", e);
-            Ok(AuthResult {
-                success: false,
-                next_step: Some("waiting".to_string()),
-                error: None,
-            })
+        Ok(tl::enums::auth::LoginToken::MigrateTo(m)) => {
+            complete_qr_login_on_dc(&client, &state, m.dc_id, m.token).await
+        }
+        Err(error) if error.is("SESSION_PASSWORD_NEEDED") => {
+            let password: tl::types::account::Password = timeout(
+                Duration::from_secs(30),
+                client.invoke(&tl::functions::account::GetPassword {}),
+            )
+            .await
+            .map_err(|_| {
+                "Telegram did not respond while requesting two-step verification.".to_string()
+            })?
+            .map_err(map_auth_error)?
+            .into();
+            *state.password_token.lock().await = Some(PasswordToken::new(password));
+            forget_qr_token();
+            Ok(QrPollResult::done("password"))
+        }
+        Err(error) => {
+            log::warn!("QR poll failed: {}", error);
+            Err(map_auth_error(error))
         }
     }
 }

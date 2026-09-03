@@ -202,6 +202,12 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                 onLogin();
                 return;
             }
+            // A token accepted before a restart can complete straight into the
+            // two-step verification prompt.
+            if (url === "__password__") {
+                setStep("password");
+                return;
+            }
 
             setQrUrl(url);
             setQrPolling(true);
@@ -234,8 +240,16 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
         }
 
         qrPollRef.current = setInterval(async () => {
+            const idInt = parseInt(apiId, 10);
+            if (isNaN(idInt)) return;
             try {
-                const pollResult = await invoke<{ success: boolean; next_step?: string }>("cmd_auth_qr_poll");
+                const pollResult = await invoke<{ success: boolean; next_step?: string; qr_url?: string }>(
+                    "cmd_auth_qr_poll",
+                    { apiId: idInt, apiHash },
+                );
+                // Completing the handshake retires the token behind the code on
+                // screen, so a replacement arrives with the poll and must be drawn.
+                if (pollResult.qr_url) setQrUrl(pollResult.qr_url);
                 if (pollResult.success) {
                     setQrPolling(false);
                     if (pollResult.next_step === "password") {
@@ -244,8 +258,11 @@ export function AuthWizard({ onLogin }: { onLogin: () => void }) {
                         onLogin();
                     }
                 }
-            } catch {
-                // Telegram may briefly reject a poll while rotating the QR token.
+            } catch (err: unknown) {
+                // A data-centre migration cannot be finished over QR, and the
+                // backend says so rather than leaving the code spinning forever.
+                setQrPolling(false);
+                setError(err instanceof Error ? err.message : String(err));
             }
         }, 3000);
 
