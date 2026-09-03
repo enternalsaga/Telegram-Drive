@@ -1,9 +1,12 @@
-name: Android debug APK
+name: Android test APK
 
-# Produces a single installable arm64 debug APK for manual testing.
-# The protected release pipeline lives in android.yml and is untouched: this
-# workflow never builds a release variant, so it never reaches the signing gate
-# and cannot weaken it.
+# Produces one installable, size-optimized arm64 APK for manual testing.
+#
+# The protected release pipeline lives in android.yml and is untouched. This
+# workflow never uses the production signing material: it mints a throwaway key
+# that exists only for the lifetime of the runner, so the APK it produces is
+# deliberately NOT interchangeable with an official build and cannot upgrade
+# over one.
 
 on:
   workflow_dispatch:
@@ -12,7 +15,7 @@ permissions:
   contents: read
 
 jobs:
-  debug-apk:
+  test-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -79,22 +82,49 @@ jobs:
           npm run tauri android init
           node scripts/apply-android-overrides.cjs
 
-      - name: Build arm64 debug APK
+      - name: Mint a throwaway signing key
         working-directory: app
-        run: npm run tauri android build -- --target aarch64 --apk true --aab false --debug
+        shell: bash
+        run: |
+          set +x
+          password="$(openssl rand -base64 24)"
+          keytool -genkeypair \
+            -keystore "$RUNNER_TEMP/test-signing.jks" \
+            -alias testkey -keyalg RSA -keysize 2048 -validity 3650 \
+            -storepass "$password" -keypass "$password" \
+            -dname 'CN=Telegram Drive Test Build, O=Unofficial, C=US'
+          printf 'keyAlias=testkey\nkeyPassword=%s\nstorePassword=%s\nstoreFile=%s\n' \
+            "$password" "$password" "$RUNNER_TEMP/test-signing.jks" \
+            > src-tauri/gen/android/app/keystore.properties
+
+      - name: Build arm64 APK
+        working-directory: app
+        run: npm run tauri android build -- --target aarch64 --apk true --aab false
+
+      - name: Verify JNI methods survived R8
+        # The release build enables R8, which can strip the JNI entry points the
+        # Rust side calls into. Without this the APK builds and then fails at
+        # runtime.
+        working-directory: app
+        shell: bash
+        run: |
+          seeds="$(find src-tauri/gen/android/app/build/outputs/mapping -name seeds.txt -print -quit)"
+          test -n "$seeds"
+          npm run android:jni:check -- --generated --r8-seeds "$seeds"
 
       - name: Locate the built APK
         id: locate
         shell: bash
         run: |
-          apk="$(find app/src-tauri/gen/android/app/build/outputs/apk -name '*debug*.apk' -print -quit)"
+          apk="$(find app/src-tauri/gen/android/app/build/outputs/apk -name '*.apk' -print -quit)"
           test -n "$apk"
           echo "path=$apk" >> "$GITHUB_OUTPUT"
           ls -lh "$apk"
+          unzip -l "$apk" | grep -E 'lib/.*\.so$'
 
-      - name: Upload the debug APK
+      - name: Upload the APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: telegram-drive-arm64-debug-apk
+          name: telegram-drive-arm64-test-apk
           path: ${{ steps.locate.outputs.path }}
           if-no-files-found: error
