@@ -96,11 +96,18 @@ jobs:
           TEST_APK_KEY_ALIAS: ${{ secrets.TEST_APK_KEY_ALIAS }}
         run: |
           set +x
-          test -n "$TEST_APK_KEYSTORE_PASSWORD"
-          test -n "$TEST_APK_KEY_ALIAS"
-          printf '%s' "$TEST_APK_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/test-signing.jks"
+          # Secrets pasted from a Windows shell arrive with a trailing CRLF. GNU
+          # base64 rejects the carriage return outright, and a password with one
+          # appended would silently be the wrong password.
+          strip() { printf '%s' "$1" | tr -d '\r\n'; }
+          alias="$(strip "$TEST_APK_KEY_ALIAS")"
+          password="$(strip "$TEST_APK_KEYSTORE_PASSWORD")"
+          test -n "$alias"
+          test -n "$password"
+          printf '%s' "$TEST_APK_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 --decode > "$RUNNER_TEMP/test-signing.jks"
+          test -s "$RUNNER_TEMP/test-signing.jks"
           printf 'keyAlias=%s\nkeyPassword=%s\nstorePassword=%s\nstoreFile=%s\n' \
-            "$TEST_APK_KEY_ALIAS" "$TEST_APK_KEYSTORE_PASSWORD" "$TEST_APK_KEYSTORE_PASSWORD" \
+            "$alias" "$password" "$password" \
             "$RUNNER_TEMP/test-signing.jks" \
             > src-tauri/gen/android/app/keystore.properties
 
