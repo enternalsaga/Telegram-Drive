@@ -4,7 +4,46 @@ import { DownloadCloud, Trash2, Pencil, CheckSquare, X, Check, FolderInput, More
 import { FileTypeIcon } from '../shared/FileTypeIcon';
 import { ActionPopover, ActionItem } from './ActionPopover';
 import { TelegramFile, TelegramFolder } from '../../types';
+import { forgetThumbnail, getCachedThumbnail, loadThumbnail } from '../../services/imagePreviewCache';
+import { isImageFile, isVideoFile } from '../../utils';
 import i18n from '../../i18n';
+
+/// Poster for an image or video row, falling back to the file-type icon while
+/// it loads or when Telegram has none. Same source as the desktop grid, so the
+/// on-disk cache is shared between the two.
+function RowThumbnail({ file, activeFolderId }: { file: TelegramFile; activeFolderId: number | null }) {
+  const hasPoster = file.type !== 'folder'
+    && (isImageFile(file.name, file.mime_type) || isVideoFile(file.name, file.mime_type));
+  const [src, setSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!hasPoster) return;
+    let cancelled = false;
+    setSrc(getCachedThumbnail(file.id, activeFolderId));
+    loadThumbnail(file.id, activeFolderId).then((result) => {
+      if (!cancelled && result) setSrc(result);
+    }).catch(() => {
+      // The icon stays; a missing poster is not an error worth surfacing.
+    });
+    return () => { cancelled = true; };
+  }, [file.id, hasPoster, activeFolderId]);
+
+  if (!src) return <FileTypeIcon filename={file.name} />;
+  return (
+    <img
+      src={src}
+      alt=""
+      aria-hidden="true"
+      loading="lazy"
+      decoding="async"
+      className="h-10 w-10 rounded-lg bg-telegram-border/30 object-cover"
+      onError={() => {
+        forgetThumbnail(file.id, activeFolderId);
+        setSrc(null);
+      }}
+    />
+  );
+}
 
 interface TouchFileListProps {
   files: TelegramFile[];
@@ -225,7 +264,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
             </div>
           )}
           <div className="flex-shrink-0">
-            <FileTypeIcon filename={file.name} />
+            <RowThumbnail file={file} activeFolderId={activeFolderId} />
           </div>
           <div className="min-w-0">
             <p className="text-xs font-semibold text-telegram-text truncate max-w-[150px] leading-snug">{file.name}</p>

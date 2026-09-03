@@ -836,6 +836,22 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     );
   }, [allFiles, fileRenames]);
 
+  // Swiping through the image viewer walks the images of the current list in
+  // display order. Videos and documents open different full-screen surfaces,
+  // so they stay out of the sequence rather than yanking the user between them.
+  const previewImages = useMemo(
+    () => displayFiles.filter(f => f.type !== 'folder' && isImageFile(f.name, f.mime_type)),
+    [displayFiles],
+  );
+  const previewIndex = previewFile
+    ? previewImages.findIndex(f => f.id === previewFile.id)
+    : -1;
+  const stepPreview = useCallback((step: 1 | -1) => {
+    if (previewIndex < 0 || previewImages.length < 2) return;
+    const next = previewImages[(previewIndex + step + previewImages.length) % previewImages.length];
+    if (next) setPreviewFile(next);
+  }, [previewIndex, previewImages]);
+
   useEffect(() => {
     if (!isAndroid) return;
     const androidWindow = window as typeof window & { __telegramDriveHandleAndroidBack?: () => boolean };
@@ -1673,6 +1689,11 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             activeFolderId={activeFolderId}
             onClose={() => setPreviewFile(null)}
             onDownload={handleDownload}
+            onNext={previewImages.length > 1 ? () => stepPreview(1) : undefined}
+            onPrev={previewImages.length > 1 ? () => stepPreview(-1) : undefined}
+            currentIndex={previewIndex >= 0 ? previewIndex : undefined}
+            totalItems={previewImages.length}
+            nextFile={previewIndex >= 0 ? previewImages[(previewIndex + 1) % previewImages.length] ?? null : null}
           />
         </LazyFeatureBoundary>
       )}

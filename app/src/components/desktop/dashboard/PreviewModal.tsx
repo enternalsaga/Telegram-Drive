@@ -20,6 +20,11 @@ const MAX_PREFETCH_BYTES = 25 * 1024 * 1024;
 const MIN_IMAGE_ZOOM = 0.25;
 const MAX_IMAGE_ZOOM = 16;
 const IMAGE_ZOOM_STEP = 1.25;
+// A horizontal flick on an unzoomed image moves to the neighbouring file. Once
+// zoomed in, the same drag pans the image instead, so swiping is disabled there.
+const SWIPE_MIN_DISTANCE = 56;
+const SWIPE_MAX_DURATION_MS = 600;
+const SWIPE_HORIZONTAL_BIAS = 1.5;
 
 type Point = { x: number; y: number };
 type ImageTransform = { zoom: number; pan: Point };
@@ -385,6 +390,15 @@ export function PreviewModal({
             } else {
                 lastTouchTapRef.current = { point: endPoint, time: Date.now() };
             }
+        } else if (allowTap && wasSingleTouch && pointerStart
+            && imageTransformRef.current.zoom <= 1.05
+            && Date.now() - pointerStart.time < SWIPE_MAX_DURATION_MS) {
+            const dx = endPoint.x - pointerStart.point.x;
+            const dy = endPoint.y - pointerStart.point.y;
+            if (Math.abs(dx) >= SWIPE_MIN_DISTANCE && Math.abs(dx) > Math.abs(dy) * SWIPE_HORIZONTAL_BIAS) {
+                if (dx < 0) onNext?.();
+                else onPrev?.();
+            }
         }
 
         if (activePointersRef.current.size === 1) {
@@ -400,7 +414,7 @@ export function PreviewModal({
             gestureHadMultiplePointersRef.current = false;
             setImageInteracting(false);
         }
-    }, [toggleImageZoom]);
+    }, [toggleImageZoom, onNext, onPrev]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
