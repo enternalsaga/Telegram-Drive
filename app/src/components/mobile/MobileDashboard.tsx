@@ -1,5 +1,5 @@
 import { lazy, useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { Folder, Download, Menu, LogOut, RefreshCw, UploadCloud, MoreVertical, Trash2, Pencil, Globe, Shield, Lock, ChevronDown, Share2, Link, Copy, Check, X, Loader2, Wifi, Activity, Zap, Eye, EyeOff, HelpCircle, ExternalLink, Pause, Play, RotateCcw, CheckCircle2, Database, Heart } from 'lucide-react';
+import { Folder, Download, Menu, LogOut, RefreshCw, UploadCloud, MoreVertical, Trash2, Pencil, Globe, Shield, Lock, ChevronDown, Share2, Link, Copy, Check, X, Loader2, Wifi, Activity, Zap, Eye, EyeOff, HelpCircle, ExternalLink, Pause, Play, RotateCcw, CheckCircle2, Database, Heart, LayoutGrid, List } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
@@ -10,6 +10,7 @@ import { BottomNavBar } from './BottomNavBar';
 import { TouchFileList } from './TouchFileList';
 import { ThemeToggle } from '../shared/ThemeToggle';
 import AdsterraBanner from '../shared/AdsterraBanner';
+import { SPONSOR_CONTENT_ENABLED } from '../../config/sponsorship';
 import { DriveConceptTour } from '../desktop/dashboard/DriveConceptTour';
 import { ActionPopover, ActionItem } from './ActionPopover';
 import { ShareDialog } from '../desktop/dashboard/ShareDialog';
@@ -366,7 +367,8 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
   // The in-app sponsor placement is TV-safe and remains available to free users.
   // Keep it suppressed during media, previews, dialogs, and active transfers so it
   // never covers playback controls or interrupts a bandwidth-sensitive operation.
-  const adVisible = !playingFile && !pdfFile && !previewFile && !shareFile && !bulkShareLinks
+  const adVisible = SPONSOR_CONTENT_ENABLED
+    && !playingFile && !pdfFile && !previewFile && !shareFile && !bulkShareLinks
     && !showHelp && !supporterOfferTrigger && settings.driveTourSeen
     && !uploadQueue.some(item => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status))
     && !downloadQueue.some(item => ['pending', 'cooldown', 'downloading', 'decrypting', 'verifying'].includes(item.status));
@@ -885,6 +887,16 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => updateSetting('viewMode', settings.viewMode === 'grid' ? 'list' : 'grid')}
+            className="min-h-12 min-w-12 p-2 rounded-xl bg-telegram-hover/30 hover:bg-telegram-hover/60 border border-telegram-border/40 text-telegram-subtext transition-all duration-300"
+            aria-label={i18n.t('files.toggle_layout')}
+            title={i18n.t('files.toggle_layout')}
+          >
+            {settings.viewMode === 'grid'
+              ? <List className="mx-auto w-5 h-5" aria-hidden="true" />
+              : <LayoutGrid className="mx-auto w-5 h-5" aria-hidden="true" />}
+          </button>
           <ThemeToggle />
           <button
             onClick={() => setIsSidebarOpen(true)}
@@ -942,6 +954,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
 
             {/* Dynamic Real File List */}
             <TouchFileList
+              viewMode={settings.viewMode}
               files={displayFiles}
               isLoading={isLoading && allFiles.length === 0}
               onDownload={handleDownload}

@@ -45,6 +45,8 @@ import { shouldShowSponsorContent } from "./services/supporterVisibility";
 
 type AuthStatus = "loading" | "authenticated" | "unauthenticated" | "sponsor-check" | "ad-gateway";
 
+import { SPONSOR_CONTENT_ENABLED } from "./config/sponsorship";
+
 const AD_GATEWAY_PASSED_KEY = "ad_gateway_passed";
 
 interface StartupProgress {
@@ -196,7 +198,7 @@ function AppContent() {
 
     let cancelled = false;
     const finishSponsorCheck = async () => {
-      if (!shouldShowSponsorContent(supporterStatus)) {
+      if (!SPONSOR_CONTENT_ENABLED || !shouldShowSponsorContent(supporterStatus)) {
         if (!cancelled) setAuthStatus("authenticated");
         return;
       }

@@ -33,6 +33,7 @@ import { ShareDialog } from './dashboard/ShareDialog';
 import { RenameFolderModal } from './dashboard/RenameFolderModal';
 import { RenameFileModal } from './dashboard/RenameFileModal';
 import { DesktopAdBanner } from './dashboard/DesktopAdBanner';
+import { SPONSOR_CONTENT_ENABLED } from '../../config/sponsorship';
 import { RemoteUploadModal } from './dashboard/RemoteUploadModal';
 import { KeyboardShortcutsDialog } from './dashboard/KeyboardShortcutsDialog';
 import { DriveConceptTour } from './dashboard/DriveConceptTour';
@@ -1129,7 +1130,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 />
             )}
 
-            <DesktopAdBanner
+            {SPONSOR_CONTENT_ENABLED && <DesktopAdBanner
                 suppressed={
                     uploadQueue.some(item => ['pending', 'uploading', 'downloading', 'encrypting', 'verifying'].includes(item.status))
                     || downloadQueue.some(item => ['pending', 'cooldown', 'downloading', 'decrypting', 'verifying'].includes(item.status))
@@ -1137,7 +1138,7 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
                 }
                 onSupport={() => { setSettingsInitialTab('privacy'); setShowSettings(true); }}
                 onManualDismiss={() => showSupporterOffer('ad_dismissed')}
-            />
+            />}
 
             {shareFile && (
                 <ShareDialog

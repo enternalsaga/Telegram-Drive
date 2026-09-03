@@ -11,7 +11,11 @@ import i18n from '../../i18n';
 /// Poster for an image or video row, falling back to the file-type icon while
 /// it loads or when Telegram has none. Same source as the desktop grid, so the
 /// on-disk cache is shared between the two.
-function RowThumbnail({ file, activeFolderId }: { file: TelegramFile; activeFolderId: number | null }) {
+function RowThumbnail({ file, activeFolderId, variant = 'row' }: {
+  file: TelegramFile;
+  activeFolderId: number | null;
+  variant?: 'row' | 'tile';
+}) {
   const hasPoster = file.type !== 'folder'
     && (isImageFile(file.name, file.mime_type) || isVideoFile(file.name, file.mime_type));
   const [src, setSrc] = useState<string | null>(null);
@@ -28,7 +32,11 @@ function RowThumbnail({ file, activeFolderId }: { file: TelegramFile; activeFold
     return () => { cancelled = true; };
   }, [file.id, hasPoster, activeFolderId]);
 
-  if (!src) return <FileTypeIcon filename={file.name} />;
+  if (!src) {
+    return variant === 'tile'
+      ? <div className="flex h-full w-full items-center justify-center"><FileTypeIcon filename={file.name} size="lg" /></div>
+      : <FileTypeIcon filename={file.name} />;
+  }
   return (
     <img
       src={src}
@@ -36,7 +44,9 @@ function RowThumbnail({ file, activeFolderId }: { file: TelegramFile; activeFold
       aria-hidden="true"
       loading="lazy"
       decoding="async"
-      className="h-10 w-10 rounded-lg bg-telegram-border/30 object-cover"
+      className={variant === 'tile'
+        ? 'h-full w-full bg-telegram-border/20 object-cover'
+        : 'h-10 w-10 rounded-lg bg-telegram-border/30 object-cover'}
       onError={() => {
         forgetThumbnail(file.id, activeFolderId);
         setSrc(null);
@@ -68,9 +78,10 @@ interface TouchFileListProps {
   activeFolderId: number | null;
   scrollElementRef: RefObject<HTMLElement | null>;
   disableVirtualization?: boolean;
+  viewMode?: 'list' | 'grid';
 }
 
-export function TouchFileList({ files, isLoading, onDownload, onDelete, onPreview, onRename, selectedIds, onToggleSelection, onSelectAll, onClearSelection, onBulkDelete, onBulkDownload, onBulkMove, onBulkShare, onShare, onCopyTelegramLink, onKeepOffline, onRemoveOffline, folders, activeFolderId, scrollElementRef, disableVirtualization = false }: TouchFileListProps) {
+export function TouchFileList({ files, isLoading, onDownload, onDelete, onPreview, onRename, selectedIds, onToggleSelection, onSelectAll, onClearSelection, onBulkDelete, onBulkDownload, onBulkMove, onBulkShare, onShare, onCopyTelegramLink, onKeepOffline, onRemoveOffline, folders, activeFolderId, scrollElementRef, disableVirtualization = false, viewMode = 'list' }: TouchFileListProps) {
   const [selectionMode, setSelectionMode] = useState(false);
   const [showMovePicker, setShowMovePicker] = useState(false);
   const [actionMenuFile, setActionMenuFile] = useState<TelegramFile | null>(null);
@@ -108,15 +119,21 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
     };
   }, [files.length, isSelectionActive, scrollElementRef]);
 
+  // Tiles are laid out three to a row on a phone, so the virtualizer counts
+  // rows of tiles instead of files and a long folder stays as cheap to scroll.
+  const isGrid = viewMode === 'grid';
+  const gridColumns = 3;
+  const rowCount = isGrid ? Math.ceil(files.length / gridColumns) : files.length;
+
   const rowVirtualizer = useVirtualizer({
     enabled: !disableVirtualization,
-    count: files.length,
+    count: rowCount,
     getScrollElement: () => scrollElementRef.current,
-    estimateSize: () => 82,
+    estimateSize: () => (isGrid ? 148 : 82),
     overscan: 10,
     gap: 10,
     paddingEnd: 80,
-    getItemKey: index => files[index]?.id ?? index,
+    getItemKey: index => (isGrid ? `row-${index}` : files[index]?.id ?? index),
     scrollMargin,
   });
 
@@ -213,6 +230,71 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
     });
     return actions;
   }, [onPreview, onDownload, onRename, onDelete, onShare, onCopyTelegramLink, onKeepOffline, onRemoveOffline, folders, activeFolderId]);
+
+  const renderFileTile = (file: TelegramFile) => {
+    const isSelected = selectedIdSet.has(file.id);
+    return (
+      <button
+        key={file.id}
+        type="button"
+        onPointerDown={(e) => handlePointerDown(e, file)}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onClick={() => {
+          // A long press opens the action popover; the click that follows it
+          // must not also open the file.
+          if (longPressFiredRef.current) {
+            longPressFiredRef.current = false;
+            return;
+          }
+          if (isSelectionActive) onToggleSelection(file.id);
+          else onPreview(file);
+        }}
+        className={`relative flex aspect-square min-w-0 flex-col overflow-hidden rounded-2xl border text-left transition-colors ${
+          isSelected
+            ? 'border-telegram-primary/60 bg-telegram-primary/10'
+            : 'border-telegram-border/20 bg-telegram-surface/40'
+        }`}
+        aria-label={file.name}
+        aria-pressed={isSelected}
+      >
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+          <RowThumbnail file={file} activeFolderId={activeFolderId} variant="tile" />
+        </div>
+        <div className="shrink-0 bg-telegram-bg/75 px-2 py-1.5 backdrop-blur-sm">
+          <p className="truncate text-[10px] font-semibold leading-tight text-telegram-text">{file.name}</p>
+          <p className="mt-0.5 font-mono text-[9px] text-telegram-subtext/80">{file.sizeStr}</p>
+        </div>
+        {isSelected && (
+          <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-telegram-primary text-black">
+            <Check className="h-3 w-3" />
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  const renderTileRow = (rowIndex: number, virtualRow?: VirtualItem) => {
+    const rowFiles = files.slice(rowIndex * gridColumns, rowIndex * gridColumns + gridColumns);
+    return (
+      <div
+        key={virtualRow ? virtualRow.key : `row-${rowIndex}`}
+        data-index={virtualRow?.index}
+        ref={virtualRow ? rowVirtualizer.measureElement : undefined}
+        className="grid grid-cols-3 gap-2.5"
+        style={virtualRow ? {
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          transform: `translateY(${virtualRow.start - scrollMargin}px)`,
+        } : undefined}
+      >
+        {rowFiles.map(renderFileTile)}
+      </div>
+    );
+  };
 
   const renderFileRow = (file: TelegramFile, index: number, virtualRow?: VirtualItem) => {
     const isSelected = selectedIdSet.has(file.id);
@@ -443,13 +525,16 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
           {/* File list — no more swipeable list, just tap-friendly rows with ⋮ menu */}
           <div
             ref={listRef}
-            className={disableVirtualization ? 'space-y-2.5' : 'relative'}
+            className={disableVirtualization ? (isGrid ? 'grid grid-cols-3 gap-2.5' : 'space-y-2.5') : 'relative'}
             style={disableVirtualization ? undefined : { height: `${rowVirtualizer.getTotalSize()}px` }}
           >
             {disableVirtualization
-              ? files.map((file, index) => renderFileRow(file, index))
-              : rowVirtualizer.getVirtualItems().map((virtualRow) =>
-                renderFileRow(files[virtualRow.index], virtualRow.index, virtualRow))}
+              ? (isGrid
+                ? files.map(renderFileTile)
+                : files.map((file, index) => renderFileRow(file, index)))
+              : rowVirtualizer.getVirtualItems().map((virtualRow) => (isGrid
+                ? renderTileRow(virtualRow.index, virtualRow)
+                : renderFileRow(files[virtualRow.index], virtualRow.index, virtualRow)))}
           </div>
         </>
       )}
