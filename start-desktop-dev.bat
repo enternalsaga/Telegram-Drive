@@ -29,18 +29,32 @@ if not exist "node_modules" (
     call npm install || goto :fail
 )
 
-rem Vite binds port 1420. Without this check a second instance fails deep inside
-rem Vite with a stack trace that hides the real cause.
+rem Vite binds port 1420, and a previous run can outlive its terminal. Reclaim
+rem the port rather than failing deep inside Vite with an unhelpful stack trace.
+rem Only whatever is listening on 1420 is stopped, which for this project is the
+rem dev server named by devUrl in tauri.conf.json.
 set "NETSTAT=%SystemRoot%\System32\netstat.exe"
 set "FINDSTR=%SystemRoot%\System32\findstr.exe"
+set "TASKKILL=%SystemRoot%\System32\taskkill.exe"
+set "TIMEOUT=%SystemRoot%\System32\timeout.exe"
 "%NETSTAT%" -ano | "%FINDSTR%" "LISTENING" | "%FINDSTR%" ":1420" >nul 2>&1
 if not errorlevel 1 (
-    echo Port 1420 is already in use, so Telegram Drive is most likely running already.
-    echo Close that window, or stop the process holding the port:
+    echo Port 1420 is still held by an earlier run. Stopping it:
     rem cmd cannot parse a for /f command that opens with a quote, and these
     rem System32 paths contain no spaces, so they are used bare here.
-    for /f "tokens=5" %%p in ('%NETSTAT% -ano ^| %FINDSTR% "LISTENING" ^| %FINDSTR% ":1420"') do echo     taskkill /PID %%p /F
-    goto :fail
+    for /f "tokens=5" %%p in ('%NETSTAT% -ano ^| %FINDSTR% "LISTENING" ^| %FINDSTR% ":1420"') do (
+        echo     stopping PID %%p
+        "%TASKKILL%" /PID %%p /T /F >nul 2>&1
+    )
+    rem Windows frees a listening socket slightly after the process exits.
+    "%TIMEOUT%" /t 2 /nobreak >nul 2>&1
+    "%NETSTAT%" -ano | "%FINDSTR%" "LISTENING" | "%FINDSTR%" ":1420" >nul 2>&1
+    if not errorlevel 1 (
+        echo Port 1420 is still in use after stopping those processes.
+        echo Something outside this project is holding it; close it and try again.
+        goto :fail
+    )
+    echo     port released
 )
 
 echo Starting Telegram Drive. The first launch compiles Rust and can take several minutes.
