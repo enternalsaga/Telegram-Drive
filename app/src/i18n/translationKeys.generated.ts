@@ -127,6 +127,7 @@ export type TranslationKey =
   | 'common.settings'
   | 'common.show_groups'
   | 'common.size'
+  | 'common.sort_by'
   | 'common.start'
   | 'common.status'
   | 'common.storage_insights'

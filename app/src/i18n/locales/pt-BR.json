@@ -46,6 +46,7 @@
     "name": "Nome",
     "size": "Tamanho",
     "date": "Data",
+    "sort_by": "Ordenar por",
     "play": "Reproduzir",
     "start": "Start",
     "settings": "Settings",

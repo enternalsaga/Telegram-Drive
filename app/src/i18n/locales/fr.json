@@ -46,6 +46,7 @@
     "name": "Nom",
     "size": "Taille",
     "date": "Date",
+    "sort_by": "Trier par",
     "play": "Lire",
     "start": "Start",
     "settings": "Settings",

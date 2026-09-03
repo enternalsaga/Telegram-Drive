@@ -14,6 +14,7 @@ import {
 } from '../../src/utils/files';
 import { filterAndRankFiles, fuzzyScore, type FileSearchFilters } from '../../src/services/fileSearch';
 import { classifyFileExtension, matchesSizeFacet } from '../../src/services/searchPolicy';
+import { nextSortState, sortFiles } from '../../src/services/fileSort';
 import { describeFileActions, resolvePublicFolderUsername } from '../../src/components/desktop/dashboard/fileActionDescriptors';
 import type { TelegramFile, TelegramFolder } from '../../src/types';
 
@@ -117,5 +118,36 @@ describe('search policy', () => {
     const filters: FileSearchFilters = { scope: 'folder', type: 'document', size: 'medium', date: 'any' };
     expect(filterAndRankFiles(files, 'notes', filters).map(file => file.id)).toEqual([2]);
     expect(files.map(file => file.id)).toEqual([1, 2]);
+  });
+});
+
+describe('file sorting', () => {
+  const unsorted: TelegramFile[] = [
+    { id: 1, name: 'photo 10.jpg', size: 300, sizeStr: '300 B', created_at: '2026-01-03T00:00:00Z' },
+    { id: 2, name: 'photo 2.jpg', size: 100, sizeStr: '100 B', created_at: '2026-01-01T00:00:00Z' },
+    { id: 3, name: 'Photo 3.jpg', size: 200, sizeStr: '200 B', created_at: '2026-01-02T00:00:00Z' },
+  ] as TelegramFile[];
+
+  it('orders names the way a reader expects, not by code point', () => {
+    // "photo 2" before "photo 10", and case does not split the group.
+    expect(sortFiles(unsorted, 'name', 'asc', 'en').map(f => f.id)).toEqual([2, 3, 1]);
+  });
+
+  it('reverses every field on descending', () => {
+    expect(sortFiles(unsorted, 'size', 'asc', 'en').map(f => f.id)).toEqual([2, 3, 1]);
+    expect(sortFiles(unsorted, 'size', 'desc', 'en').map(f => f.id)).toEqual([1, 3, 2]);
+    expect(sortFiles(unsorted, 'date', 'asc', 'en').map(f => f.id)).toEqual([2, 3, 1]);
+    expect(sortFiles(unsorted, 'date', 'desc', 'en').map(f => f.id)).toEqual([1, 3, 2]);
+  });
+
+  it('leaves the caller list untouched', () => {
+    sortFiles(unsorted, 'size', 'desc', 'en');
+    expect(unsorted.map(f => f.id)).toEqual([1, 2, 3]);
+  });
+
+  it('flips direction on the active field and restarts ascending on a new one', () => {
+    expect(nextSortState({ field: 'name', direction: 'asc' }, 'name')).toEqual({ field: 'name', direction: 'desc' });
+    expect(nextSortState({ field: 'name', direction: 'desc' }, 'name')).toEqual({ field: 'name', direction: 'asc' });
+    expect(nextSortState({ field: 'name', direction: 'desc' }, 'size')).toEqual({ field: 'size', direction: 'asc' });
   });
 });

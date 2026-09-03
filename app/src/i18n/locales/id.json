@@ -46,6 +46,7 @@
     "name": "Nama",
     "size": "Ukuran",
     "date": "Tanggal",
+    "sort_by": "Urutkan menurut",
     "play": "Putar",
     "start": "Start",
     "settings": "Settings",

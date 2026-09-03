@@ -46,6 +46,7 @@
     "name": "名称",
     "size": "大小",
     "date": "日期",
+    "sort_by": "排序方式",
     "play": "播放",
     "start": "Start",
     "settings": "Settings",

@@ -11,8 +11,8 @@ import { FileListItem } from './FileListItem';
 import { Skeleton } from '../../ui';
 import { quietMetrics } from '../../../design/contracts';
 
-export type SortField = 'name' | 'size' | 'date';
-export type SortDirection = 'asc' | 'desc';
+export type { SortField, SortDirection } from '../../../services/fileSort';
+import { sortFiles, type SortDirection, type SortField } from '../../../services/fileSort';
 
 const GRID_GAP = quietMetrics.fileGrid.gap;
 const MIN_CARD_WIDTH = quietMetrics.fileGrid.minimumCardWidth;
@@ -109,23 +109,10 @@ export function FileExplorer({
         setContextMenu({ x: e.clientX, y: e.clientY, file });
     }, []);
 
-    const sortedFiles = useMemo(() => {
-        return [...files].sort((a, b) => {
-            let comparison = 0;
-            switch (sortField) {
-                case 'name':
-                    comparison = a.name.localeCompare(b.name, settings.language, { numeric: true, sensitivity: 'base' });
-                    break;
-                case 'size':
-                    comparison = (a.size || 0) - (b.size || 0);
-                    break;
-                case 'date':
-                    comparison = (a.created_at || '').localeCompare(b.created_at || '');
-                    break;
-            }
-            return sortDirection === 'asc' ? comparison : -comparison;
-        });
-    }, [files, settings.language, sortField, sortDirection]);
+    const sortedFiles = useMemo(
+        () => sortFiles(files, sortField, sortDirection, settings.language),
+        [files, settings.language, sortField, sortDirection],
+    );
 
     const handlePreviewRequest = useCallback((file: TelegramFile) => {
         onPreview(file, sortedFiles);

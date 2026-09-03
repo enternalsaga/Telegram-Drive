@@ -46,6 +46,7 @@
     "name": "名前",
     "size": "サイズ",
     "date": "日付",
+    "sort_by": "並べ替え",
     "play": "再生",
     "start": "開始",
     "settings": "設定",

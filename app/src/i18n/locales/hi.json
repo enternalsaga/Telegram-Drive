@@ -46,6 +46,7 @@
     "name": "नाम",
     "size": "आकार",
     "date": "दिनांक",
+    "sort_by": "इसके अनुसार क्रमबद्ध करें",
     "play": "चलाएं",
     "start": "Start",
     "settings": "Settings",

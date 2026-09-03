@@ -24,7 +24,8 @@ import { formatBytes, isMediaFile, isPdfFile, isArchiveFile, nativeShareOrCopy, 
 // Components
 import { Sidebar } from './dashboard/Sidebar';
 import { TopBar } from './dashboard/TopBar';
-import { FileExplorer, type SortDirection, type SortField } from './dashboard/FileExplorer';
+import { FileExplorer } from './dashboard/FileExplorer';
+import { nextSortState, type SortDirection, type SortField } from '../../services/fileSort';
 import { TransferCenter } from './dashboard/TransferCenter';
 import { MoveToFolderModal } from './dashboard/MoveToFolderModal';
 import { ExternalDropBlocker } from './dashboard/ExternalDropBlocker';
@@ -126,14 +127,8 @@ export function Dashboard({ onLogout }: { onLogout: () => void }) {
     );
 
     const handleSortChange = (field: SortField) => {
-        if (field === sortField) {
-            updateSettings({
-                fileSortField: field,
-                fileSortDirection: sortDirection === 'asc' ? 'desc' : 'asc',
-            });
-            return;
-        }
-        updateSettings({ fileSortField: field, fileSortDirection: 'asc' });
+        const next = nextSortState({ field: sortField, direction: sortDirection }, field);
+        updateSettings({ fileSortField: next.field, fileSortDirection: next.direction });
     };
     const [showRemoteUpload, setShowRemoteUpload] = useState(false);
     const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);

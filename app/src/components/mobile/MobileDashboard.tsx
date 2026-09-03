@@ -1,5 +1,5 @@
 import { lazy, useState, useCallback, useMemo, useEffect, useRef } from 'react';
-import { Folder, Download, Menu, LogOut, RefreshCw, UploadCloud, MoreVertical, Trash2, Pencil, Globe, Shield, Lock, ChevronDown, Share2, Link, Copy, Check, X, Loader2, Wifi, Activity, Zap, Eye, EyeOff, HelpCircle, ExternalLink, Pause, Play, RotateCcw, CheckCircle2, Database, Heart, LayoutGrid, List } from 'lucide-react';
+import { Folder, Download, Menu, LogOut, RefreshCw, UploadCloud, MoreVertical, Trash2, Pencil, Globe, Shield, Lock, ChevronDown, Share2, Link, Copy, Check, X, Loader2, Wifi, Activity, Zap, Eye, EyeOff, HelpCircle, ExternalLink, Pause, Play, RotateCcw, CheckCircle2, Database, Heart, LayoutGrid, List, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
@@ -36,6 +36,7 @@ import { BandwidthWidget } from '../desktop/dashboard/BandwidthWidget';
 import type { OfflineCacheStatus } from '../../types';
 import { evaluateAndroidTransferPolicy, type AndroidTransferEnvironment } from '../../services/androidTransferPolicy';
 import { effectiveVideoUploadMode } from '../../services/videoUploadMode';
+import { nextSortState, sortFiles, type SortField } from '../../services/fileSort';
 import {
   shouldOfferNewSupporterPurchase,
   shouldShowSupporterPrompt,
@@ -86,7 +87,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const { isAndroid, isTelevision } = usePlatform();
   const { theme } = useTheme();
-  const { settings, updateSetting, isLoaded: settingsLoaded } = useSettings();
+  const { settings, updateSetting, updateSettings, isLoaded: settingsLoaded } = useSettings();
   const { status: supporterStatus } = useSupporter();
   const [showHelp, setShowHelp] = useState(false);
   const [supporterOfferTrigger, setSupporterOfferTrigger] = useState<SupporterPromptTrigger | null>(null);
@@ -238,6 +239,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
 
   const [playingFile, setPlayingFile] = useState<TelegramFile | null>(null);
   const [pdfFile, setPdfFile] = useState<TelegramFile | null>(null);
+  const [showSortMenu, setShowSortMenu] = useState(false);
   const [previewFile, setPreviewFile] = useState<TelegramFile | null>(null);
   const [shareFile, setShareFile] = useState<TelegramFile | null>(null);
   const [bulkShareLinks, setBulkShareLinks] = useState<Array<{ file: TelegramFile; link: string }> | null>(null);
@@ -831,12 +833,27 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
     });
   }, [folders, activeFolderId]);
 
-  const displayFiles = useMemo(() => {
+  const renamedFiles = useMemo(() => {
     if (fileRenames.size === 0) return allFiles;
     return allFiles.map(f =>
       fileRenames.has(f.id) ? { ...f, name: fileRenames.get(f.id)! } : f
     );
   }, [allFiles, fileRenames]);
+
+  // Same ordering and the same persisted setting as the desktop explorer, so a
+  // folder reads identically on both.
+  const displayFiles = useMemo(
+    () => sortFiles(renamedFiles, settings.fileSortField, settings.fileSortDirection, settings.language),
+    [renamedFiles, settings.fileSortField, settings.fileSortDirection, settings.language],
+  );
+  const cycleSort = useCallback((field: SortField) => {
+    const next = nextSortState(
+      { field: settings.fileSortField, direction: settings.fileSortDirection },
+      field,
+    );
+    updateSettings({ fileSortField: next.field, fileSortDirection: next.direction });
+    setShowSortMenu(false);
+  }, [settings.fileSortField, settings.fileSortDirection, updateSettings]);
 
   // Swiping through the image viewer walks the images of the current list in
   // display order. Videos and documents open different full-screen surfaces,
@@ -887,6 +904,45 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <div className="relative">
+            <button
+              onClick={() => setShowSortMenu(open => !open)}
+              className="min-h-12 min-w-12 p-2 rounded-xl bg-telegram-hover/30 hover:bg-telegram-hover/60 border border-telegram-border/40 text-telegram-subtext transition-all duration-300"
+              aria-label={i18n.t('common.sort_by')}
+              aria-expanded={showSortMenu}
+              title={i18n.t('common.sort_by')}
+            >
+              <ArrowUpDown className="mx-auto w-5 h-5" aria-hidden="true" />
+            </button>
+            {showSortMenu && (
+              <>
+                <div className="fixed inset-0 z-[90]" onClick={() => setShowSortMenu(false)} aria-hidden="true" />
+                <div className="absolute end-0 top-full z-[95] mt-1 w-40 overflow-hidden rounded-xl border border-telegram-border/50 bg-telegram-surface shadow-2xl">
+                  {([
+                    ['name', i18n.t('common.name')],
+                    ['size', i18n.t('common.size')],
+                    ['date', i18n.t('common.date')],
+                  ] as [SortField, string][]).map(([field, label]) => {
+                    const active = settings.fileSortField === field;
+                    return (
+                      <button
+                        key={field}
+                        onClick={() => cycleSort(field)}
+                        className={`flex w-full items-center justify-between gap-2 px-3.5 py-2.5 text-left text-xs font-semibold transition-colors ${
+                          active ? 'bg-telegram-primary/10 text-telegram-primary' : 'text-telegram-subtext hover:bg-white/5'
+                        }`}
+                      >
+                        {label}
+                        {active && (settings.fileSortDirection === 'asc'
+                          ? <ArrowUp className="h-3.5 w-3.5" aria-hidden="true" />
+                          : <ArrowDown className="h-3.5 w-3.5" aria-hidden="true" />)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
           <button
             onClick={() => updateSetting('viewMode', settings.viewMode === 'grid' ? 'list' : 'grid')}
             className="min-h-12 min-w-12 p-2 rounded-xl bg-telegram-hover/30 hover:bg-telegram-hover/60 border border-telegram-border/40 text-telegram-subtext transition-all duration-300"

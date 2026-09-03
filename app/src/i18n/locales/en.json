@@ -46,6 +46,7 @@
     "name": "Name",
     "size": "Size",
     "date": "Date",
+    "sort_by": "Sort by",
     "play": "Play",
     "start": "Start",
     "settings": "Settings",

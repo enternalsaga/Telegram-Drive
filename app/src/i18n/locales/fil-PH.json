@@ -46,6 +46,7 @@
     "name": "Pangalan",
     "size": "Laki",
     "date": "Petsa",
+    "sort_by": "Ayusin ayon sa",
     "play": "Maglaro",
     "start": "Magsimula",
     "settings": "Mga Setting",

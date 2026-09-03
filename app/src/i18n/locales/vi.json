@@ -46,6 +46,7 @@
     "name": "Tên",
     "size": "Kích thước",
     "date": "Ngày",
+    "sort_by": "Sắp xếp theo",
     "play": "Phát",
     "start": "Bắt đầu",
     "settings": "Cài đặt",

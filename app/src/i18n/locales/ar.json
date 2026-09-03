@@ -46,6 +46,7 @@
     "name": "الاسم",
     "size": "الحجم",
     "date": "التاريخ",
+    "sort_by": "الترتيب حسب",
     "play": "تشغيل",
     "start": "Start",
     "settings": "Settings",

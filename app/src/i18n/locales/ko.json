@@ -46,6 +46,7 @@
     "name": "이름",
     "size": "크기",
     "date": "날짜",
+    "sort_by": "정렬 기준",
     "play": "재생",
     "start": "Start",
     "settings": "Settings",

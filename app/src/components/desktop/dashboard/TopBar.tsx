@@ -27,7 +27,7 @@ import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../../context/ThemeContext';
 import { useSettings } from '../../../context/SettingsContext';
 import { Button, IconButton, MenuItem, MenuPanel, SearchField } from '../../ui';
-import type { SortDirection, SortField } from './FileExplorer';
+import type { SortDirection, SortField } from '../../../services/fileSort';
 import type { FileSearchFilters } from '../../../services/fileSearch';
 import { useTopBarController } from './useTopBarController';
 import i18n from '../../../i18n';

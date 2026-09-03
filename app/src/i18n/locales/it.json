@@ -46,6 +46,7 @@
     "name": "Nome",
     "size": "Dimensione",
     "date": "Data",
+    "sort_by": "Ordina per",
     "play": "Riproduci",
     "start": "Avvia",
     "settings": "Impostazioni",

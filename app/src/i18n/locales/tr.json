@@ -46,6 +46,7 @@
     "name": "Ad",
     "size": "Boyut",
     "date": "Tarih",
+    "sort_by": "Sıralama ölçütü",
     "play": "Oynat",
     "start": "Start",
     "settings": "Settings",

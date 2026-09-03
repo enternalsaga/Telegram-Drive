@@ -46,6 +46,7 @@
     "name": "Nazwa",
     "size": "Rozmiar",
     "date": "Data",
+    "sort_by": "Sortuj według",
     "play": "Odtwórz",
     "start": "Start",
     "settings": "Ustawienia",

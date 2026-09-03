@@ -46,6 +46,7 @@
     "name": "Имя",
     "size": "Размер",
     "date": "Дата",
+    "sort_by": "Сортировать по",
     "play": "Воспроизвести",
     "start": "Start",
     "settings": "Settings",
