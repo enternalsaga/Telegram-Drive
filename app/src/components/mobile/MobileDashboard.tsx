@@ -1763,6 +1763,7 @@ export default function MobileDashboard({ onLogout }: { onLogout?: () => void })
             currentIndex={previewIndex >= 0 ? previewIndex : undefined}
             totalItems={previewImages.length}
             nextFile={previewIndex >= 0 ? previewImages[(previewIndex + 1) % previewImages.length] ?? null : null}
+            mobile
           />
         </LazyFeatureBoundary>
       )}

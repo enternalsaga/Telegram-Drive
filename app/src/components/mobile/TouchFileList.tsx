@@ -95,6 +95,16 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
   const [scrollMargin, setScrollMargin] = useState(0);
   const LONG_PRESS_DURATION = 500;
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  // Drag-to-select ("paint"): pressing a row/tile and dragging toggles every
+  // item the finger passes to one value. Refs mirror props so the move handler
+  // reads fresh selection state without re-subscribing mid-drag.
+  const selectedIdSetRef = useRef(selectedIdSet);
+  selectedIdSetRef.current = selectedIdSet;
+  const paintRef = useRef<{ value: boolean; started: boolean; visited: Set<number>; startId: number } | null>(null);
+  const paintDownRef = useRef({ x: 0, y: 0 });
+  const paintPosRef = useRef({ x: 0, y: 0 });
+  const paintFiredAtRef = useRef(0);
+  const autoScrollRef = useRef<number | null>(null);
 
   useEffect(() => {
     const updateScrollMargin = () => {
@@ -168,6 +178,89 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
       longPressTimerRef.current = null;
     }
     longPressPosRef.current = null;
+  }, []);
+
+  const idUnderPoint = useCallback((x: number, y: number) => {
+    const item = document.elementFromPoint(x, y)?.closest('[data-select-id]');
+    const raw = item?.getAttribute('data-select-id');
+    return raw ? Number(raw) : null;
+  }, []);
+
+  // Toggle the item under the finger to the paint value, once per drag.
+  const resolvePaint = useCallback((x: number, y: number) => {
+    const paint = paintRef.current;
+    if (!paint) return;
+    if (!paint.started) {
+      paint.started = true;
+      if (selectedIdSetRef.current.has(paint.startId) !== paint.value) onToggleSelection(paint.startId);
+      paint.visited.add(paint.startId);
+    }
+    const id = idUnderPoint(x, y);
+    if (id !== null && !paint.visited.has(id)) {
+      paint.visited.add(id);
+      if (selectedIdSetRef.current.has(id) !== paint.value) onToggleSelection(id);
+    }
+    // A recent paint suppresses the click that fires on release, so it does not
+    // toggle the last item back. performance.now() self-expires, so a drag that
+    // ends off an item never poisons a later tap.
+    paintFiredAtRef.current = performance.now();
+  }, [idUnderPoint, onToggleSelection]);
+  const resolvePaintRef = useRef(resolvePaint);
+  resolvePaintRef.current = resolvePaint;
+
+  // While painting, scrolling is suppressed (touch-action: none), so drag near
+  // an edge auto-scrolls the list to keep a long folder reachable.
+  const autoScrollTick = useCallback(() => {
+    const paint = paintRef.current;
+    const scroller = scrollElementRef.current;
+    if (!paint?.started || !scroller) { autoScrollRef.current = null; return; }
+    const rect = scroller.getBoundingClientRect();
+    const band = 76;
+    const { x, y } = paintPosRef.current;
+    let delta = 0;
+    if (y < rect.top + band) delta = -16;
+    else if (y > rect.bottom - band) delta = 16;
+    if (delta !== 0) {
+      scroller.scrollTop += delta;
+      resolvePaintRef.current(x, y);
+    }
+    autoScrollRef.current = requestAnimationFrame(autoScrollTick);
+  }, [scrollElementRef]);
+
+  const handleSelectPointerDown = useCallback((e: React.PointerEvent) => {
+    if (!isSelectionActive) return;
+    const id = idUnderPoint(e.clientX, e.clientY);
+    if (id === null) return;
+    paintRef.current = { value: !selectedIdSetRef.current.has(id), started: false, visited: new Set(), startId: id };
+    paintDownRef.current = { x: e.clientX, y: e.clientY };
+    paintPosRef.current = { x: e.clientX, y: e.clientY };
+  }, [isSelectionActive, idUnderPoint]);
+
+  const handleSelectPointerMove = useCallback((e: React.PointerEvent) => {
+    const paint = paintRef.current;
+    if (!paint) return;
+    paintPosRef.current = { x: e.clientX, y: e.clientY };
+    if (!paint.started) {
+      const dx = e.clientX - paintDownRef.current.x;
+      const dy = e.clientY - paintDownRef.current.y;
+      // Let a still tap fall through to onClick; only a real drag paints.
+      if (Math.hypot(dx, dy) < 8) return;
+      if (autoScrollRef.current === null) autoScrollRef.current = requestAnimationFrame(autoScrollTick);
+    }
+    resolvePaint(e.clientX, e.clientY);
+  }, [resolvePaint, autoScrollTick]);
+
+  const endPaint = useCallback(() => {
+    const wasPainting = paintRef.current?.started;
+    paintRef.current = null;
+    if (autoScrollRef.current !== null) { cancelAnimationFrame(autoScrollRef.current); autoScrollRef.current = null; }
+    if (wasPainting) paintFiredAtRef.current = performance.now();
+  }, []);
+
+  const clickWasPaint = useCallback(() => performance.now() - paintFiredAtRef.current < 400, []);
+
+  useEffect(() => () => {
+    if (autoScrollRef.current !== null) cancelAnimationFrame(autoScrollRef.current);
   }, []);
 
   // Build action items for a file's popover menu
@@ -248,9 +341,11 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
             longPressFiredRef.current = false;
             return;
           }
+          if (clickWasPaint()) return;
           if (isSelectionActive) onToggleSelection(file.id);
           else onPreview(file);
         }}
+        data-select-id={file.id}
         className={`relative flex aspect-square min-w-0 flex-col overflow-hidden rounded-2xl border text-left transition-colors ${
           isSelected
             ? 'border-telegram-primary/60 bg-telegram-primary/10'
@@ -314,9 +409,11 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
             longPressFiredRef.current = false;
             return;
           }
+          if (clickWasPaint()) return;
           if (isSelectionActive) onToggleSelection(file.id);
           else onPreview(file);
         }}
+        data-select-id={file.id}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
@@ -399,7 +496,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
       {!isLoading && files.length > 0 && (
         <>
           {/* Selection mode toggle & batch action bar */}
-          <div className="flex items-center gap-2 mb-3">
+          <div className="flex flex-wrap items-center gap-2 mb-3">
             <button
               onClick={() => {
                 if (isSelectionActive) {
@@ -438,17 +535,17 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
 
           {/* Batch action bar - visible when items are selected */}
           {isSelectionActive && selectedIds.length > 0 && (
-            <div className="sticky top-0 z-10 flex items-center justify-center gap-3 p-3 mb-3 rounded-2xl bg-telegram-primary/10 border border-telegram-primary/20 backdrop-blur-md animate-in slide-in-from-top-2">
+            <div className="sticky top-0 z-10 flex flex-wrap items-center justify-center gap-2 p-2.5 mb-3 rounded-2xl bg-telegram-primary/10 border border-telegram-primary/20 backdrop-blur-md animate-in slide-in-from-top-2">
               <button
                 onClick={onBulkDownload}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-telegram-primary/20 text-telegram-primary border border-telegram-primary/30 active:scale-95 transition-all duration-200"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-telegram-primary/20 text-telegram-primary border border-telegram-primary/30 active:scale-95 transition-all duration-200"
               >
                 <DownloadCloud className="w-3.5 h-3.5" />
                 Download ({selectedIds.length})
               </button>
               <button
                 onClick={() => setShowMovePicker(true)}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 active:scale-95 transition-all duration-200"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 active:scale-95 transition-all duration-200"
               >
                 <FolderInput className="w-3.5 h-3.5" />
                 Move ({selectedIds.length})
@@ -456,7 +553,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
               {onBulkShare && (
                 <button
                   onClick={onBulkShare}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-teal-500/20 text-teal-400 border border-teal-500/30 active:scale-95 transition-all duration-200"
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-teal-500/20 text-teal-400 border border-teal-500/30 active:scale-95 transition-all duration-200"
                 >
                   <Link className="w-3.5 h-3.5" />
                   Share ({selectedIds.length})
@@ -464,7 +561,7 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
               )}
               <button
                 onClick={onBulkDelete}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30 active:scale-95 transition-all duration-200"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30 active:scale-95 transition-all duration-200"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 Delete ({selectedIds.length})
@@ -525,8 +622,17 @@ export function TouchFileList({ files, isLoading, onDownload, onDelete, onPrevie
           {/* File list — no more swipeable list, just tap-friendly rows with ⋮ menu */}
           <div
             ref={listRef}
+            onPointerDown={handleSelectPointerDown}
+            onPointerMove={handleSelectPointerMove}
+            onPointerUp={endPaint}
+            onPointerCancel={endPaint}
             className={disableVirtualization ? (isGrid ? 'grid grid-cols-3 gap-2.5' : 'space-y-2.5') : 'relative'}
-            style={disableVirtualization ? undefined : { height: `${rowVirtualizer.getTotalSize()}px` }}
+            style={{
+              ...(disableVirtualization ? {} : { height: `${rowVirtualizer.getTotalSize()}px` }),
+              // Suppress native scroll during selection so a drag paints instead;
+              // edge auto-scroll covers reaching the rest of a long list.
+              touchAction: isSelectionActive ? 'none' : undefined,
+            }}
           >
             {disableVirtualization
               ? (isGrid

@@ -56,6 +56,9 @@ interface PreviewModalProps {
     prevFile?: TelegramFile | null;
     activeFolderId: number | null;
     onDownload?: (file: TelegramFile) => void;
+    /** Touch layout: edge taps navigate, the zoom toolbar sits at the bottom,
+     *  and the side arrows are hidden. */
+    mobile?: boolean;
 }
 
 export function PreviewModal({
@@ -68,6 +71,7 @@ export function PreviewModal({
     nextFile,
     activeFolderId,
     onDownload,
+    mobile = false,
 }: PreviewModalProps) {
     const { t } = useTranslation();
     const { settings } = useSettings();
@@ -101,6 +105,7 @@ export function PreviewModal({
     const pointerStartRef = useRef<{ point: Point; time: number } | null>(null);
     const gestureHadMultiplePointersRef = useRef(false);
     const lastTouchTapRef = useRef<{ point: Point; time: number } | null>(null);
+    const singleTapTimerRef = useRef<number | null>(null);
 
     const commitImageTransform = useCallback((next: ImageTransform) => {
         imageTransformRef.current = next;
@@ -373,6 +378,10 @@ export function PreviewModal({
         }
     }, [clampPan, commitImageTransform]);
 
+    useEffect(() => () => {
+        if (singleTapTimerRef.current !== null) window.clearTimeout(singleTapTimerRef.current);
+    }, []);
+
     const finishImagePointer = useCallback((event: React.PointerEvent<HTMLDivElement>, allowTap: boolean) => {
         const endPoint = { x: event.clientX, y: event.clientY };
         const pointerStart = pointerStartRef.current;
@@ -385,10 +394,30 @@ export function PreviewModal({
             && distance(pointerStart.point, endPoint) < 12) {
             const previousTap = lastTouchTapRef.current;
             if (previousTap && Date.now() - previousTap.time < 325 && distance(previousTap.point, endPoint) < 32) {
+                if (singleTapTimerRef.current !== null) {
+                    window.clearTimeout(singleTapTimerRef.current);
+                    singleTapTimerRef.current = null;
+                }
                 toggleImageZoom(endPoint);
                 lastTouchTapRef.current = null;
             } else {
                 lastTouchTapRef.current = { point: endPoint, time: Date.now() };
+                // Wait out the double-tap window before treating this as a lone
+                // edge tap, so the first tap of a zoom gesture never navigates.
+                if (mobile && imageTransformRef.current.zoom <= 1.05 && (onNext || onPrev)) {
+                    const tapX = endPoint.x;
+                    if (singleTapTimerRef.current !== null) window.clearTimeout(singleTapTimerRef.current);
+                    singleTapTimerRef.current = window.setTimeout(() => {
+                        singleTapTimerRef.current = null;
+                        lastTouchTapRef.current = null;
+                        const viewport = imageViewportRef.current;
+                        if (!viewport) return;
+                        const bounds = viewport.getBoundingClientRect();
+                        const ratio = (tapX - bounds.left) / Math.max(1, bounds.width);
+                        if (ratio <= 0.4) onPrev?.();
+                        else if (ratio >= 0.6) onNext?.();
+                    }, 300);
+                }
             }
         } else if (allowTap && wasSingleTouch && pointerStart
             && imageTransformRef.current.zoom <= 1.05
@@ -414,7 +443,7 @@ export function PreviewModal({
             gestureHadMultiplePointersRef.current = false;
             setImageInteracting(false);
         }
-    }, [toggleImageZoom, onNext, onPrev]);
+    }, [toggleImageZoom, onNext, onPrev, mobile]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -462,25 +491,29 @@ export function PreviewModal({
     return (
         <div className="viewer-overlay fixed inset-0 z-[150] flex items-center justify-center p-4" onClick={onClose}>
             <div className="relative flex max-h-screen w-full max-w-5xl flex-col items-center justify-center" onClick={(event) => event.stopPropagation()}>
-                <button
-                    onClick={onPrev}
-                    disabled={!onPrev}
-                    className="viewer-navigation absolute start-2 top-1/2 z-20 -translate-y-1/2 disabled:pointer-events-none disabled:opacity-0"
-                    title="Previous (ArrowLeft / J)"
-                    aria-label="Previous file"
-                >
-                    <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
-                </button>
+                {!mobile && (
+                    <>
+                        <button
+                            onClick={onPrev}
+                            disabled={!onPrev}
+                            className="viewer-navigation absolute start-2 top-1/2 z-20 -translate-y-1/2 disabled:pointer-events-none disabled:opacity-0"
+                            title="Previous (ArrowLeft / J)"
+                            aria-label="Previous file"
+                        >
+                            <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
+                        </button>
 
-                <button
-                    onClick={onNext}
-                    disabled={!onNext}
-                    className="viewer-navigation absolute end-2 top-1/2 z-20 -translate-y-1/2 disabled:pointer-events-none disabled:opacity-0"
-                    title="Next (ArrowRight / L)"
-                    aria-label="Next file"
-                >
-                    <ChevronRight className="h-5 w-5 rtl:rotate-180" />
-                </button>
+                        <button
+                            onClick={onNext}
+                            disabled={!onNext}
+                            className="viewer-navigation absolute end-2 top-1/2 z-20 -translate-y-1/2 disabled:pointer-events-none disabled:opacity-0"
+                            title="Next (ArrowRight / L)"
+                            aria-label="Next file"
+                        >
+                            <ChevronRight className="h-5 w-5 rtl:rotate-180" />
+                        </button>
+                    </>
+                )}
 
                 <button
                     onClick={onClose}
@@ -585,7 +618,7 @@ export function PreviewModal({
 
                         {fullReady && (
                             <div
-                                className="image-viewer-toolbar viewer-toolbar absolute start-1/2 top-3 z-30 -translate-x-1/2 rtl:translate-x-1/2"
+                                className={`image-viewer-toolbar viewer-toolbar absolute start-1/2 z-30 -translate-x-1/2 rtl:translate-x-1/2 ${mobile ? 'bottom-6' : 'top-3'}`}
                                 onPointerDown={(event) => event.stopPropagation()}
                                 onDoubleClick={(event) => event.stopPropagation()}
                                 onWheel={(event) => event.stopPropagation()}
