@@ -630,7 +630,11 @@ mod tests {
         let state = CryptoState::new(Box::new(MemoryVault::new()));
         state.create_vault(b"test passphrase").unwrap();
         state.set_auto_lock_timeout(None);
-        state.set_last_activity_for_test(Instant::now() - Duration::from_secs(24 * 60 * 60));
+        // Windows `Instant` counts from boot, so a day-old instant does not exist right after a reboot.
+        let long_ago = Instant::now()
+            .checked_sub(Duration::from_secs(24 * 60 * 60))
+            .unwrap_or_else(|| Instant::now() - Duration::from_secs(61));
+        state.set_last_activity_for_test(long_ago);
 
         assert!(!state.lock_if_auto_lock_due());
         assert!(!state.record_activity());
