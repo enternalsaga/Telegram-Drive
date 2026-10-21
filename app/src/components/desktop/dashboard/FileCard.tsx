@@ -1,15 +1,13 @@
-import { useCallback, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Folder, Eye, Trash2, Link, Check } from 'lucide-react';
-import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { TelegramFile } from '../../../types';
 import { forgetThumbnail, getCachedThumbnail, loadThumbnail } from '../../../services/imagePreviewCache';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
-import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
-import { useCachedVariants } from '../../../hooks/useCachedVariants';
 import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
 import { Skeleton } from '../../ui';
 import { EncryptionBadge } from '../../shared/EncryptionBadge';
 import { describeFileActions } from './fileActionDescriptors';
+import { useFileItemInteractions } from './useFileItemInteractions';
 import { isImageFile, isVideoFile } from '../../../utils';
 import i18n from '../../../i18n';
 
@@ -35,46 +33,10 @@ export function FileCard({ file, onDelete, onDownload, onPreview, onShare, isSel
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [thumbnailLoading, setThumbnailLoading] = useState(false);
     const [thumbnailReady, setThumbnailReady] = useState(false);
-    const fileIds = selectedIds?.includes(file.id) ? selectedIds : [file.id];
     const {
-        attributes,
-        listeners,
-        setNodeRef: setDraggableNodeRef,
-        isDragging,
-    } = useDraggable({
-        id: `telegram-file-${file.folder_id ?? 'home'}-${file.id}`,
-        disabled: isFolder || disableDrag,
-        data: { kind: 'telegram-files', fileIds, label: file.name },
-    });
-    const {
-        setNodeRef: setDroppableNodeRef,
-        isOver,
-        active: dragActive,
-    } = useDroppable({
-        id: `content-folder-${file.id}`,
-        disabled: !isFolder,
-        data: { kind: 'content-folder', folderId: file.id },
-    });
-    const setNodeRef = useCallback((node: HTMLDivElement | null) => {
-        setDraggableNodeRef(node);
-        setDroppableNodeRef(node);
-    }, [setDraggableNodeRef, setDroppableNodeRef]);
-    const isFileDragOver = isFolder && isOver && dragActive?.data.current?.kind === 'telegram-files';
-
-    // Lazy video metadata badge (.mp4 only)
-    const { data: videoMeta, isLoading: videoMetaLoading } = useVideoMetadata(
-        file.id,
-        file.folder_id ?? null,
-        file.name,
-    );
-
-    // Cached HLS variants
-    const { data: cachedVariants } = useCachedVariants(
-        file.id,
-        file.folder_id ?? null,
-        file.name,
-    );
-    const cachedQualities = (cachedVariants || []).filter(v => v.available).map(v => v.quality);
+        attributes, listeners, setNodeRef, isDragging, isFileDragOver,
+        videoMeta, videoMetaLoading, cachedQualities,
+    } = useFileItemInteractions(file, isFolder, selectedIds, disableDrag);
 
     // Telegram stores a poster frame for video documents just as it does for
     // images, so both kinds can show one.

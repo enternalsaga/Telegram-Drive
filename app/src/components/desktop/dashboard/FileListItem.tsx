@@ -1,13 +1,10 @@
-import { useCallback } from 'react';
 import { Folder, MoreVertical, Check } from 'lucide-react';
-import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { TelegramFile } from '../../../types';
 import { FileTypeIcon } from '../../shared/FileTypeIcon';
-import { useVideoMetadata } from '../../../hooks/useVideoMetadata';
-import { useCachedVariants } from '../../../hooks/useCachedVariants';
 import { VideoMetaBadge } from '../../shared/VideoMetaBadge';
 import { EncryptionBadge } from '../../shared/EncryptionBadge';
 import { describeFileActions } from './fileActionDescriptors';
+import { useFileItemInteractions } from './useFileItemInteractions';
 
 
 interface FileListItemProps {
@@ -22,46 +19,10 @@ export function FileListItem({
     file, selectedIds, onFileClick, handleContextMenu, disableDrag = false
 }: FileListItemProps) {
     const { isFolder } = describeFileActions(file);
-    const fileIds = selectedIds.includes(file.id) ? selectedIds : [file.id];
     const {
-        attributes,
-        listeners,
-        setNodeRef: setDraggableNodeRef,
-        isDragging,
-    } = useDraggable({
-        id: `telegram-file-${file.folder_id ?? 'home'}-${file.id}`,
-        disabled: isFolder || disableDrag,
-        data: { kind: 'telegram-files', fileIds, label: file.name },
-    });
-    const {
-        setNodeRef: setDroppableNodeRef,
-        isOver,
-        active: dragActive,
-    } = useDroppable({
-        id: `content-folder-${file.id}`,
-        disabled: !isFolder,
-        data: { kind: 'content-folder', folderId: file.id },
-    });
-    const setNodeRef = useCallback((node: HTMLDivElement | null) => {
-        setDraggableNodeRef(node);
-        setDroppableNodeRef(node);
-    }, [setDraggableNodeRef, setDroppableNodeRef]);
-    const isFileDragOver = isFolder && isOver && dragActive?.data.current?.kind === 'telegram-files';
-
-    // Lazy video metadata badge (.mp4 only)
-    const { data: videoMeta, isLoading: videoMetaLoading } = useVideoMetadata(
-        file.id,
-        file.folder_id ?? null,
-        file.name,
-    );
-
-    // Cached HLS variants
-    const { data: cachedVariants } = useCachedVariants(
-        file.id,
-        file.folder_id ?? null,
-        file.name,
-    );
-    const cachedQualities = (cachedVariants || []).filter(v => v.available).map(v => v.quality);
+        attributes, listeners, setNodeRef, isDragging, isFileDragOver,
+        videoMeta, videoMetaLoading, cachedQualities,
+    } = useFileItemInteractions(file, isFolder, selectedIds, disableDrag);
 
     return (
         <div
