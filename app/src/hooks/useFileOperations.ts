@@ -9,6 +9,7 @@ import { TelegramFile } from '../types';
 import { updateFileQueryData } from '../services/fileListRefresh';
 import { userFacingError } from '../services/userFacingError';
 import { useTranslation } from 'react-i18next';
+import { joinPath, pickDownloadDirectory } from '../services/transferPaths';
 
 export function useFileOperations(
     activeFolderId: number | null,
@@ -95,10 +96,9 @@ export function useFileOperations(
         }
         const downloadToDir = async (dirPath: string) => {
             let successCount = 0;
-            const sep = dirPath.includes('\\') ? '\\' : '/';
             for (const file of targetFiles) {
                 const sanitizedName = sanitizeFilename(file.name);
-                const filePath = dirPath.endsWith(sep) ? `${dirPath}${sanitizedName}` : `${dirPath}${sep}${sanitizedName}`;
+                const filePath = joinPath(dirPath, sanitizedName);
                 try {
                     await invoke('cmd_download_file', { req: { message_id: file.id, save_path: filePath, folder_id: activeFolderId } });
                     successCount++;
@@ -108,19 +108,7 @@ export function useFileOperations(
             setSelectedIds([]);
         };
         try {
-            const dirPath = await pickWithFallback(
-                () => open({ directory: true, multiple: false, title: "Select Download Destination" }),
-                () => handleBulkDownload(),
-                {
-                    errorTitle: 'Folder picker failed',
-                    onBrowserPicker: async () => {
-                        const paths = await showFileDialogFallback({ directory: true, multiple: false });
-                        if (paths.length === 0) return null;
-                        const sep = paths[0].includes('\\') ? '\\' : '/';
-                        return paths[0].substring(0, paths[0].lastIndexOf(sep));
-                    },
-                },
-            );
+            const dirPath = await pickDownloadDirectory(() => handleBulkDownload());
             if (!dirPath) return;
             await downloadToDir(dirPath);
         } catch (e) {
@@ -173,10 +161,9 @@ export function useFileOperations(
         const downloadToDir = async (dirPath: string) => {
             let successCount = 0;
             toast.info(`Downloading folder contents (${files.length} files)...`);
-            const sep = dirPath.includes('\\') ? '\\' : '/';
             for (const file of files) {
                 const sanitizedName = sanitizeFilename(file.name);
-                const filePath = dirPath.endsWith(sep) ? `${dirPath}${sanitizedName}` : `${dirPath}${sep}${sanitizedName}`;
+                const filePath = joinPath(dirPath, sanitizedName);
                 try {
                     await invoke('cmd_download_file', { req: { message_id: file.id, save_path: filePath, folder_id: activeFolderId } });
                     successCount++;

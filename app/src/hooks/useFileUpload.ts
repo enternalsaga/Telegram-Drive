@@ -20,22 +20,18 @@ import {
     clearTerminalTransfers,
     configureDesktopTransferLimits,
     enqueueDesktopTransfers,
-    listenToDesktopTransfers,
-    listDesktopTransfers,
     supplyTransferPromptToken,
     transferBulkAction,
     transferItemAction,
     transferJobToUploadItem,
     uploadItemToTransferRequest,
 } from '../services/desktopTransferEngine';
-
-interface ProgressPayload {
-    id: string;
-    percent: number;
-    uploaded_bytes: number;
-    total_bytes: number;
-    speed_bytes_per_sec: number;
-}
+import {
+    applyAndroidNetworkAvailability,
+    persistTransferQueue,
+    useAndroidTransferProgress,
+    useDesktopTransferProjection,
+} from './useDesktopTransferProjection';
 
 interface RemoteProgressPayload {
     id: string;
@@ -67,29 +63,15 @@ export function useFileUpload(
     const startingItemsRef = useRef<Set<string>>(new Set());
     const uploadQueueRef = useRef(uploadQueue);
     const androidNetworkAvailableRef = useRef(androidNetworkAvailable);
-    const desktopRevisionsRef = useRef<Map<string, number>>(new Map());
-    const desktopStatusesRef = useRef<Map<string, string>>(new Map());
     uploadQueueRef.current = uploadQueue;
     androidNetworkAvailableRef.current = androidNetworkAvailable;
 
-    // Listen for progress events from Rust
+    useAndroidTransferProgress('upload-progress', 'uploadedBytes', setUploadQueue);
+
+    // Remote (URL) uploads report their own phase on Android.
     useEffect(() => {
         if (!isAndroidPlatform) return;
-        let unlistenProgress: UnlistenFn | undefined;
         let unlistenRemote: UnlistenFn | undefined;
-
-        listen<ProgressPayload>('upload-progress', (event) => {
-            setUploadQueue(q => q.map(i =>
-                i.id === event.payload.id ? {
-                    ...i,
-                    progress: event.payload.percent,
-                    uploadedBytes: event.payload.uploaded_bytes,
-                    totalBytes: event.payload.total_bytes,
-                    speedBytesPerSec: event.payload.speed_bytes_per_sec,
-                } : i
-            ));
-        }).then(fn => { unlistenProgress = fn; });
-
         listen<RemoteProgressPayload>('remote-upload-progress', (event) => {
             setUploadQueue(q => q.map(i =>
                 i.id === event.payload.id && !['paused', 'cancelled', 'waiting_for_network'].includes(i.status) ? {
@@ -102,65 +84,27 @@ export function useFileUpload(
                 } : i
             ));
         }).then(fn => { unlistenRemote = fn; });
-
-        return () => {
-            unlistenProgress?.();
-            unlistenRemote?.();
-        };
+        return () => { unlistenRemote?.(); };
     }, []);
 
     // Desktop queue state is a revisioned projection of the durable Rust engine.
-    useEffect(() => {
-        if (isAndroidPlatform) return;
-        let disposed = false;
-        let unlisten: UnlistenFn | undefined;
-        const accept = (
-            job: Awaited<ReturnType<typeof listDesktopTransfers>>[number],
-            notifyTransition = false,
-        ) => {
-            if (disposed || job.direction !== 'upload') return;
-            const knownRevision = desktopRevisionsRef.current.get(job.id) || 0;
-            if (job.revision < knownRevision) return;
-            const previousStatus = desktopStatusesRef.current.get(job.id);
-            desktopRevisionsRef.current.set(job.id, job.revision);
-            desktopStatusesRef.current.set(job.id, job.status);
-            const item = transferJobToUploadItem(job);
-            setUploadQueue(queue => queue.some(candidate => candidate.id === item.id)
-                ? queue.map(candidate => candidate.id === item.id ? item : candidate)
-                : [...queue, item]);
-            if (notifyTransition && previousStatus !== job.status) {
-                if (job.status === 'completed') {
-                    triggerHaptic('success');
-                    announceSupporterValueMoment('upload_completed');
-                    void invalidateFolderFileQueries(queryClient, job.folderId);
-                } else if (job.status === 'failed') {
-                    toast.error(`Upload failed for ${job.filename}: ${job.error || 'Unknown error'}`);
-                } else if (job.status === 'waiting_for_unlock') {
-                    toast.warning(t('settings.encryption_mode_passphrase'));
-                }
+    const { mergeEnqueuedJobs } = useDesktopTransferProjection<QueueItem>({
+        direction: 'upload',
+        logLabel: '[Upload]',
+        setQueue: setUploadQueue,
+        toItem: transferJobToUploadItem,
+        onTransition: job => {
+            if (job.status === 'completed') {
+                triggerHaptic('success');
+                announceSupporterValueMoment('upload_completed');
+                void invalidateFolderFileQueries(queryClient, job.folderId);
+            } else if (job.status === 'failed') {
+                toast.error(`Upload failed for ${job.filename}: ${job.error || 'Unknown error'}`);
+            } else if (job.status === 'waiting_for_unlock') {
+                toast.warning(t('settings.encryption_mode_passphrase'));
             }
-        };
-        void listenToDesktopTransfers(job => accept(job, true), id => {
-            desktopRevisionsRef.current.delete(id);
-            desktopStatusesRef.current.delete(id);
-            setUploadQueue(queue => queue.filter(item => item.id !== id));
-        }).then(async listener => {
-            if (disposed) {
-                listener();
-                return;
-            }
-            unlisten = listener;
-            const jobs = await listDesktopTransfers();
-            jobs.forEach(job => accept(job));
-        }).catch(error => {
-            console.error('[Upload] Could not attach to the desktop transfer engine:', error);
-            toast.error('The desktop transfer queue could not be loaded.');
-        });
-        return () => {
-            disposed = true;
-            unlisten?.();
-        };
-    }, [queryClient, t]);
+        },
+    });
 
     useEffect(() => {
         if (!store || initialized) return;
@@ -197,17 +141,7 @@ export function useFileUpload(
         if (!isAndroidPlatform) return;
         if (!store || !initialized) return;
         const pending = serializeUploadQueue(uploadQueue, isAndroidPlatform);
-        persistenceChainRef.current = persistenceChainRef.current
-            .catch(() => undefined)
-            .then(async () => {
-                await store.set('uploadQueue', pending);
-                await store.save();
-                persistenceHealthyRef.current = true;
-            })
-            .catch(error => {
-                persistenceHealthyRef.current = false;
-                console.error('[Upload] Could not persist the recovery queue:', error);
-            });
+        persistTransferQueue(persistenceChainRef, persistenceHealthyRef, store, 'uploadQueue', pending, '[Upload]');
     }, [store, uploadQueue, initialized]);
 
     useEffect(() => {
@@ -220,28 +154,12 @@ export function useFileUpload(
 
     useEffect(() => {
         if (!isAndroidPlatform || !initialized) return;
-        const activeStatuses: QueueItem['status'][] = ['uploading', 'downloading', 'encrypting', 'verifying'];
-        if (!androidNetworkAvailable) {
-            setUploadQueue(queue => {
-                let changed = false;
-                const next = queue.map(item => {
-                    if (item.status !== 'pending' && !activeStatuses.includes(item.status)) return item;
-                    changed = true;
-                    if (activeStatuses.includes(item.status)) {
-                        networkPausedRef.current.add(item.id);
-                        void invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => undefined);
-                    }
-                    return { ...item, status: 'waiting_for_network' as const, error: androidWaitingReason };
-                });
-                return changed ? next : queue;
-            });
-            return;
-        }
-        setUploadQueue(queue => queue.some(item => item.status === 'waiting_for_network')
-            ? queue.map(item => item.status === 'waiting_for_network'
-                ? { ...item, status: 'pending' as const, error: undefined }
-                : item)
-            : queue);
+        applyAndroidNetworkAvailability(setUploadQueue, androidNetworkAvailable, {
+            activeStatuses: ['uploading', 'downloading', 'encrypting', 'verifying'],
+            queuedStatuses: ['pending'],
+            networkPausedRef,
+            waitingReason: androidWaitingReason,
+        });
     }, [androidNetworkAvailable, androidWaitingReason, initialized]);
 
     // Process up to maxConcurrentUploads in parallel
@@ -284,20 +202,7 @@ export function useFileUpload(
             return;
         }
         const jobs = await enqueueDesktopTransfers(items.map(uploadItemToTransferRequest));
-        setUploadQueue(previous => {
-            const currentJobs = jobs.filter(job => {
-                const knownRevision = desktopRevisionsRef.current.get(job.id) || 0;
-                return job.revision >= knownRevision;
-            });
-            const incoming = new Map(currentJobs.map(job => [job.id, transferJobToUploadItem(job)]));
-            const next = previous.map(item => incoming.get(item.id) || item);
-            const known = new Set(previous.map(item => item.id));
-            for (const job of currentJobs) {
-                desktopRevisionsRef.current.set(job.id, job.revision);
-                if (!known.has(job.id)) next.push(transferJobToUploadItem(job));
-            }
-            return next;
-        });
+        mergeEnqueuedJobs(jobs);
     };
 
     const cleanupResumableSource = async (item: QueueItem) => {

@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { save, open } from '@tauri-apps/plugin-dialog';
-import { emit, listen, UnlistenFn } from '@tauri-apps/api/event';
+import { save } from '@tauri-apps/plugin-dialog';
+import { emit } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { DownloadItem, FileEncryptionInfo, TelegramFile, VaultStatus } from '../types';
-import { isAndroidPlatform, showFileDialogFallback, pickWithFallback, sanitizeFilename } from '../utils';
+import { isAndroidPlatform, pickWithFallback, sanitizeFilename } from '../utils';
 import { useSettings } from '../context/SettingsContext';
 import type { Store } from '@tauri-apps/plugin-store';
 import { useTranslation } from 'react-i18next';
@@ -20,21 +20,18 @@ import {
     clearTerminalTransfers,
     downloadItemToTransferRequest,
     enqueueDesktopTransfers,
-    listenToDesktopTransfers,
-    listDesktopTransfers,
     supplyTransferPromptToken,
     transferBulkAction,
     transferItemAction,
     transferJobToDownloadItem,
 } from '../services/desktopTransferEngine';
-
-interface ProgressPayload {
-    id: string;
-    percent: number;
-    uploaded_bytes: number;
-    total_bytes: number;
-    speed_bytes_per_sec: number;
-}
+import { directoryFromPath, joinPath, pickDownloadDirectory } from '../services/transferPaths';
+import {
+    applyAndroidNetworkAvailability,
+    persistTransferQueue,
+    useAndroidTransferProgress,
+    useDesktopTransferProjection,
+} from './useDesktopTransferProjection';
 
 export function useFileDownload(
     store: Store | null,
@@ -53,8 +50,6 @@ export function useFileDownload(
     const startingItemsRef = useRef<Set<string>>(new Set());
     const downloadQueueRef = useRef(downloadQueue);
     const androidNetworkAvailableRef = useRef(androidNetworkAvailable);
-    const desktopRevisionsRef = useRef<Map<string, number>>(new Map());
-    const desktopStatusesRef = useRef<Map<string, string>>(new Map());
     downloadQueueRef.current = downloadQueue;
     androidNetworkAvailableRef.current = androidNetworkAvailable;
     const { settings, updateSetting } = useSettings();
@@ -66,102 +61,45 @@ export function useFileDownload(
         webDavTipShownRef.current = settings.downloadWebdavTipSeen;
     }, [settings.downloadWebdavTipSeen]);
 
-    const directoryFromPath = (path: string) => {
-        const separator = path.includes('\\') ? '\\' : '/';
-        const index = path.lastIndexOf(separator);
-        return index > 0 ? path.slice(0, index) : path;
+    const announceDownloadCompleted = (filename: string, savePath?: string | null) => {
+        triggerHaptic('success');
+        announceSupporterValueMoment('download_completed');
+        toast.success(`Downloaded: ${filename}`, savePath ? {
+            action: {
+                label: 'Show in folder',
+                onClick: () => { void revealItemInDir(savePath); },
+            },
+        } : undefined);
+        if (!webDavTipShownRef.current) {
+            webDavTipShownRef.current = true;
+            updateSetting('downloadWebdavTipSeen', true);
+            window.setTimeout(() => toast.info('Tip: browse the same files directly in Finder or File Explorer with WebDAV.', {
+                action: {
+                    label: 'WebDAV settings',
+                    onClick: () => window.dispatchEvent(new CustomEvent('telegram-drive-open-settings', { detail: { tab: 'webdav' } })),
+                },
+            }), 900);
+        }
     };
 
-    const joinPath = (directory: string, filename: string) => {
-        const separator = directory.includes('\\') ? '\\' : '/';
-        return directory.endsWith(separator) ? `${directory}${filename}` : `${directory}${separator}${filename}`;
-    };
-
-    // Listen for progress events from Rust
-    useEffect(() => {
-        if (!isAndroidPlatform) return;
-        let unlisten: UnlistenFn | undefined;
-        listen<ProgressPayload>('download-progress', (event) => {
-            setDownloadQueue(q => q.map(i =>
-                i.id === event.payload.id ? {
-                    ...i,
-                    progress: event.payload.percent,
-                    downloadedBytes: event.payload.uploaded_bytes,
-                    totalBytes: event.payload.total_bytes,
-                    speedBytesPerSec: event.payload.speed_bytes_per_sec,
-                } : i
-            ));
-        }).then(fn => { unlisten = fn; });
-        return () => { unlisten?.(); };
-    }, []);
+    useAndroidTransferProgress('download-progress', 'downloadedBytes', setDownloadQueue);
 
     // Desktop queue state is a revisioned projection of the durable Rust engine.
-    useEffect(() => {
-        if (isAndroidPlatform) return;
-        let disposed = false;
-        let unlisten: UnlistenFn | undefined;
-        const accept = (
-            job: Awaited<ReturnType<typeof listDesktopTransfers>>[number],
-            notifyTransition = false,
-        ) => {
-            if (disposed || job.direction !== 'download') return;
-            const knownRevision = desktopRevisionsRef.current.get(job.id) || 0;
-            if (job.revision < knownRevision) return;
-            const previousStatus = desktopStatusesRef.current.get(job.id);
-            desktopRevisionsRef.current.set(job.id, job.revision);
-            desktopStatusesRef.current.set(job.id, job.status);
-            const item = transferJobToDownloadItem(job);
-            setDownloadQueue(queue => queue.some(candidate => candidate.id === item.id)
-                ? queue.map(candidate => candidate.id === item.id ? item : candidate)
-                : [...queue, item]);
-            if (notifyTransition && previousStatus !== job.status) {
-                if (job.status === 'completed') {
-                    triggerHaptic('success');
-                    announceSupporterValueMoment('download_completed');
-                    toast.success(`Downloaded: ${job.filename}`, job.savePath ? {
-                        action: {
-                            label: 'Show in folder',
-                            onClick: () => { void revealItemInDir(job.savePath as string); },
-                        },
-                    } : undefined);
-                    if (!webDavTipShownRef.current) {
-                        webDavTipShownRef.current = true;
-                        updateSetting('downloadWebdavTipSeen', true);
-                        window.setTimeout(() => toast.info('Tip: browse the same files directly in Finder or File Explorer with WebDAV.', {
-                            action: {
-                                label: 'WebDAV settings',
-                                onClick: () => window.dispatchEvent(new CustomEvent('telegram-drive-open-settings', { detail: { tab: 'webdav' } })),
-                            },
-                        }), 900);
-                    }
-                } else if (job.status === 'failed') {
-                    toast.error(`Download failed: ${job.filename}`);
-                } else if (job.status === 'waiting_for_unlock') {
-                    toast.warning(t('settings.encryption_mode_passphrase'));
-                }
+    const { mergeEnqueuedJobs } = useDesktopTransferProjection<DownloadItem>({
+        direction: 'download',
+        logLabel: '[Download]',
+        setQueue: setDownloadQueue,
+        toItem: transferJobToDownloadItem,
+        onTransition: job => {
+            if (job.status === 'completed') {
+                announceDownloadCompleted(job.filename, job.savePath);
+            } else if (job.status === 'failed') {
+                toast.error(`Download failed: ${job.filename}`);
+            } else if (job.status === 'waiting_for_unlock') {
+                toast.warning(t('settings.encryption_mode_passphrase'));
             }
-        };
-        void listenToDesktopTransfers(job => accept(job, true), id => {
-            desktopRevisionsRef.current.delete(id);
-            desktopStatusesRef.current.delete(id);
-            setDownloadQueue(queue => queue.filter(item => item.id !== id));
-        }).then(async listener => {
-            if (disposed) {
-                listener();
-                return;
-            }
-            unlisten = listener;
-            const jobs = await listDesktopTransfers();
-            jobs.forEach(job => accept(job));
-        }).catch(error => {
-            console.error('[Download] Could not attach to the desktop transfer engine:', error);
-            toast.error('The desktop transfer queue could not be loaded.');
-        });
-        return () => {
-            disposed = true;
-            unlisten?.();
-        };
-    }, [t, updateSetting]);
+        },
+    });
 
     // Load saved queue on mount
     useEffect(() => {
@@ -216,43 +154,17 @@ export function useFileDownload(
         if (!isAndroidPlatform) return;
         if (!store || !initialized) return;
         const pending = serializeDownloadQueue(downloadQueue, isAndroidPlatform);
-        persistenceChainRef.current = persistenceChainRef.current
-            .catch(() => undefined)
-            .then(async () => {
-                await store.set('downloadQueue', pending);
-                await store.save();
-                persistenceHealthyRef.current = true;
-            })
-            .catch(error => {
-                persistenceHealthyRef.current = false;
-                console.error('[Download] Could not persist the recovery queue:', error);
-            });
+        persistTransferQueue(persistenceChainRef, persistenceHealthyRef, store, 'downloadQueue', pending, '[Download]');
     }, [store, downloadQueue, initialized]);
 
     useEffect(() => {
         if (!isAndroidPlatform || !initialized) return;
-        const activeStatuses: DownloadItem['status'][] = ['downloading', 'decrypting', 'verifying'];
-        if (!androidNetworkAvailable) {
-            setDownloadQueue(queue => {
-                let changed = false;
-                const next = queue.map(item => {
-                    if (!['pending', 'cooldown'].includes(item.status) && !activeStatuses.includes(item.status)) return item;
-                    changed = true;
-                    if (activeStatuses.includes(item.status)) {
-                        networkPausedRef.current.add(item.id);
-                        void invoke('cmd_cancel_transfer', { transferId: item.id }).catch(() => undefined);
-                    }
-                    return { ...item, status: 'waiting_for_network' as const, error: androidWaitingReason };
-                });
-                return changed ? next : queue;
-            });
-            return;
-        }
-        setDownloadQueue(queue => queue.some(item => item.status === 'waiting_for_network')
-            ? queue.map(item => item.status === 'waiting_for_network'
-                ? { ...item, status: 'pending' as const, error: undefined }
-                : item)
-            : queue);
+        applyAndroidNetworkAvailability(setDownloadQueue, androidNetworkAvailable, {
+            activeStatuses: ['downloading', 'decrypting', 'verifying'],
+            queuedStatuses: ['pending', 'cooldown'],
+            networkPausedRef,
+            waitingReason: androidWaitingReason,
+        });
     }, [androidNetworkAvailable, androidWaitingReason, initialized]);
 
     // Process up to maxConcurrentDownloads in parallel
@@ -295,20 +207,7 @@ export function useFileDownload(
             return;
         }
         const jobs = await enqueueDesktopTransfers(items.map(downloadItemToTransferRequest));
-        setDownloadQueue(previous => {
-            const currentJobs = jobs.filter(job => {
-                const knownRevision = desktopRevisionsRef.current.get(job.id) || 0;
-                return job.revision >= knownRevision;
-            });
-            const incoming = new Map(currentJobs.map(job => [job.id, transferJobToDownloadItem(job)]));
-            const next = previous.map(item => incoming.get(item.id) || item);
-            const known = new Set(previous.map(item => item.id));
-            for (const job of currentJobs) {
-                desktopRevisionsRef.current.set(job.id, job.revision);
-                if (!known.has(job.id)) next.push(transferJobToDownloadItem(job));
-            }
-            return next;
-        });
+        mergeEnqueuedJobs(jobs);
     };
 
     const prepareDesktopCredential = async (messageId: number, folderId: number | null) => {
@@ -461,23 +360,12 @@ export function useFileDownload(
                 cancelledRef.current.delete(item.id);
             } else {
                 setDownloadQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'success', progress: 100 } : i));
-                triggerHaptic('success');
-                announceSupporterValueMoment('download_completed');
-                toast.success(`Downloaded: ${item.filename}`, !isAndroidPlatform && savePath ? {
-                    action: {
-                        label: 'Show in folder',
-                        onClick: () => { void revealItemInDir(savePath as string); },
-                    },
-                } : undefined);
-                if (!isAndroidPlatform && !webDavTipShownRef.current) {
-                    webDavTipShownRef.current = true;
-                    updateSetting('downloadWebdavTipSeen', true);
-                    window.setTimeout(() => toast.info('Tip: browse the same files directly in Finder or File Explorer with WebDAV.', {
-                        action: {
-                            label: 'WebDAV settings',
-                            onClick: () => window.dispatchEvent(new CustomEvent('telegram-drive-open-settings', { detail: { tab: 'webdav' } })),
-                        },
-                    }), 900);
+                if (isAndroidPlatform) {
+                    triggerHaptic('success');
+                    announceSupporterValueMoment('download_completed');
+                    toast.success(`Downloaded: ${item.filename}`);
+                } else {
+                    announceDownloadCompleted(item.filename, savePath);
                 }
             }
         } catch (e) {
@@ -595,7 +483,6 @@ export function useFileDownload(
         }
 
         const enqueueFiles = async (dir: string) => {
-            const separator = dir.includes('\\') ? '\\' : '/';
             const newItems: DownloadItem[] = files.map(file => {
                 const sanitizedName = sanitizeFilename(file.name);
                 return {
@@ -604,7 +491,7 @@ export function useFileDownload(
                     filename: sanitizedName,
                     folderId: file.folder_id ?? folderId,
                     status: 'pending' as const,
-                    savePath: dir.endsWith(separator) ? `${dir}${sanitizedName}` : `${dir}${separator}${sanitizedName}`
+                    savePath: joinPath(dir, sanitizedName)
                 };
             });
             const prepared: DownloadItem[] = [];
@@ -636,19 +523,7 @@ export function useFileDownload(
             }
         }
 
-        const dirPath = await pickWithFallback(
-            () => open({ directory: true, multiple: false, title: "Select Download Destination" }),
-            () => queueBulkDownload(files, folderId),
-            {
-                errorTitle: 'Folder picker failed',
-                onBrowserPicker: async () => {
-                    const paths = await showFileDialogFallback({ directory: true, multiple: false });
-                    if (paths.length === 0) return null;
-                    const sep = paths[0].includes('\\') ? '\\' : '/';
-                    return paths[0].substring(0, paths[0].lastIndexOf(sep));
-                },
-            },
-        );
+        const dirPath = await pickDownloadDirectory(() => queueBulkDownload(files, folderId));
         if (!dirPath) return;
         const accepted = await confirm({
             title: 'Confirm download',
