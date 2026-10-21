@@ -10,8 +10,8 @@ use actix_multipart::Multipart;
 use actix_web::web::Bytes;
 use actix_web::{delete, get, patch, post, web, HttpRequest, HttpResponse, Responder};
 use futures::{StreamExt, TryStreamExt};
-use grammers_client::types::{Media, Peer};
-use grammers_client::InputMessage;
+use grammers_client::types::{Media, Message, Peer};
+use grammers_client::{Client, InputMessage};
 use grammers_tl_types as tl;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -71,14 +71,51 @@ fn json_error(code: &str, message: &str, status: u16) -> HttpResponse {
     HttpResponse::build(actix_web::http::StatusCode::from_u16(status).unwrap()).json(body)
 }
 
+/// Early-return a 409 when the message is registered as encrypted (503 if the registry is unreadable).
+macro_rules! require_unencrypted {
+    ($db_pool:expr, $folder_id:expr, $message_id:expr, $message:expr) => {
+        match api_registered_encrypted($db_pool.get_ref().clone(), $folder_id, $message_id).await {
+            Ok(true) => return json_error("ENCRYPTED_ROUTE_UNAVAILABLE", $message, 409),
+            Ok(false) => {}
+            Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
+        }
+    };
+}
+
+/// Fetch messages by id or early-return a 500 `GET_MESSAGE_ERROR` response.
+macro_rules! require_messages {
+    ($client:expr, $peer:expr, $message_id:expr) => {
+        match $client.get_messages_by_id(&$peer, &[$message_id]).await {
+            Ok(msgs) => msgs,
+            Err(e) => return json_error("GET_MESSAGE_ERROR", &e.to_string(), 500),
+        }
+    };
+}
+
+/// Registry key for a folder (`home` is Saved Messages).
+fn registry_folder_key(folder_id: Option<i64>) -> String {
+    folder_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "home".to_string())
+}
+
+/// A folder id sent either as a JSON number or as a numeric string.
+fn json_folder_id(val: &serde_json::Value) -> Option<i64> {
+    if let Some(i) = val.as_i64() {
+        Some(i)
+    } else if let Some(s) = val.as_str() {
+        s.parse::<i64>().ok()
+    } else {
+        None
+    }
+}
+
 async fn api_registered_encrypted(
     db_pool: crate::db::DbConnection,
     folder_id: Option<i64>,
     message_id: i32,
 ) -> Result<bool, String> {
-    let folder_key = folder_id
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "home".to_string());
+    let folder_key = registry_folder_key(folder_id);
     crate::db::with_connection(db_pool, move |connection| {
         let mut statement = connection
             .prepare("SELECT 1 FROM encrypted_files WHERE folder_key = ? AND message_id = ? AND record_state = 'active'")
@@ -203,6 +240,146 @@ fn check_auth(req: &HttpRequest, api_state: &web::Data<ApiState>) -> Result<(), 
     }
 }
 
+/// Early-return with the error response when the X-API-Key check fails.
+macro_rules! require_auth {
+    ($req:expr, $api_state:expr) => {
+        if let Err(e) = check_auth(&$req, &$api_state) {
+            return e;
+        }
+    };
+}
+
+/// Resolve the connected Telegram client, or early-return a 503 response.
+macro_rules! require_client {
+    ($tg_state:expr) => {
+        match connected_client(&$tg_state).await {
+            Ok(client) => client,
+            Err(e) => return e,
+        }
+    };
+}
+
+/// Clone the connected Telegram client out of the shared state.
+async fn connected_client(tg_state: &TelegramState) -> Result<Client, HttpResponse> {
+    let client_opt = { tg_state.client.lock().await.clone() };
+    client_opt.ok_or_else(|| json_error("NOT_CONNECTED", "Telegram client is not connected", 503))
+}
+
+/// Resolve a peer or early-return a 400 `PEER_ERROR` response.
+macro_rules! require_peer {
+    ($client:expr, $folder_id:expr, $tg_state:expr) => {
+        match resolve_peer(&$client, $folder_id, &$tg_state.peer_cache).await {
+            Ok(p) => p,
+            Err(e) => return json_error("PEER_ERROR", &e, 400),
+        }
+    };
+}
+
+/// Strip the `[TD]` marker from a folder channel title.
+fn strip_td_tag(name: &str) -> String {
+    name.replace(" [TD]", "")
+        .replace(" [td]", "")
+        .replace("[TD]", "")
+        .replace("[td]", "")
+        .trim()
+        .to_string()
+}
+
+/// Encrypted uploads carry a `TDENC2` caption or a `.tdenc` document name.
+fn is_encrypted_message(msg: &Message) -> bool {
+    msg.text() == "TDENC2"
+        || matches!(
+            msg.media(),
+            Some(Media::Document(document))
+                if document.name().to_ascii_lowercase().ends_with(".tdenc")
+        )
+}
+
+/// Display name (the caption wins over the document name, as set by rename) and MIME type.
+fn caption_name_and_mime(msg: &Message, media: Media) -> (String, Option<String>) {
+    match media {
+        Media::Document(d) => {
+            let doc_name = d.name().to_string();
+            let caption = msg.text();
+            let display_name = if caption.is_empty() {
+                doc_name
+            } else {
+                caption.to_string()
+            };
+            (display_name, d.mime_type().map(|s| s.to_string()))
+        }
+        Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
+        _ => ("Unknown".to_string(), None),
+    }
+}
+
+fn query_has_folder_id(query_string: &str) -> bool {
+    query_string
+        .split('&')
+        .any(|p| p.starts_with("folder_id=") || p == "folder_id")
+}
+
+/// Saved Messages plus every `[TD]` folder channel.
+async fn all_folder_peers(client: &Client, tg_state: &TelegramState) -> Vec<(Option<i64>, Peer)> {
+    let mut peers = Vec::new();
+    if let Ok(me_peer) = resolve_peer(client, None, &tg_state.peer_cache).await {
+        peers.push((None, me_peer));
+    }
+    let mut dialogs = client.iter_dialogs();
+    while let Some(dialog) = dialogs.next().await.ok().flatten() {
+        if let Peer::Channel(ref c) = dialog.peer {
+            let name = c.raw.title.clone();
+            if name.to_lowercase().contains("[td]") {
+                peers.push((Some(c.raw.id), dialog.peer.clone()));
+            }
+        }
+    }
+    peers
+}
+
+/// Peers to scan for a request: every folder without `folder_id`, otherwise only the requested one.
+async fn folder_peers_for_query(
+    client: &Client,
+    tg_state: &TelegramState,
+    query_string: &str,
+    has_folder_id: bool,
+) -> Result<Vec<(Option<i64>, Peer)>, HttpResponse> {
+    if !has_folder_id {
+        return Ok(all_folder_peers(client, tg_state).await);
+    }
+    let mut parsed_id: Option<i64> = None;
+    for pair in query_string.split('&') {
+        let mut parts = pair.split('=');
+        if let Some(key) = parts.next() {
+            if key == "folder_id" {
+                if let Some(val) = parts.next() {
+                    if !val.is_empty() && val != "null" && val != "none" && val != "None" {
+                        if let Ok(id) = val.parse::<i64>() {
+                            parsed_id = Some(id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let resolved = resolve_peer(client, parsed_id, &tg_state.peer_cache)
+        .await
+        .map_err(|e| json_error("PEER_ERROR", &e, 400))?;
+    Ok(vec![(parsed_id, resolved)])
+}
+
+/// Resolve the peers a list/search request covers, as `(has_folder_id, peers)`, or early-return the error.
+macro_rules! require_query_peers {
+    ($req:expr, $client:expr, $tg_state:expr) => {{
+        let query_string = $req.query_string();
+        let has_folder_id = query_has_folder_id(query_string);
+        match folder_peers_for_query(&$client, &$tg_state, query_string, has_folder_id).await {
+            Ok(peers) => (has_folder_id, peers),
+            Err(e) => return e,
+        }
+    }};
+}
+
 // ──────────────────────────────── Endpoints ────────────────────────────────
 
 #[derive(Serialize)]
@@ -267,6 +444,25 @@ struct ApiFile {
     created_at: String,
 }
 
+impl ApiFile {
+    fn from_message(
+        msg: &Message,
+        folder_id: Option<i64>,
+        name: String,
+        size: u64,
+        mime_type: Option<String>,
+    ) -> Self {
+        Self {
+            id: msg.id() as i64,
+            folder_id,
+            name,
+            size,
+            mime_type,
+            created_at: msg.date().to_string(),
+        }
+    }
+}
+
 #[get("/api/v1/files")]
 async fn api_list_files(
     req: HttpRequest,
@@ -274,60 +470,11 @@ async fn api_list_files(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
-    let query_string = req.query_string();
-    let has_folder_id = query_string
-        .split('&')
-        .any(|p| p.starts_with("folder_id=") || p == "folder_id");
-
-    let mut peers_to_scan = Vec::new();
-    if !has_folder_id {
-        // Return files from ALL folders: scan dialogs + root folder
-        if let Ok(me_peer) = resolve_peer(&client, None, &tg_state.peer_cache).await {
-            peers_to_scan.push((None, me_peer));
-        }
-        let mut dialogs = client.iter_dialogs();
-        while let Some(dialog) = dialogs.next().await.ok().flatten() {
-            if let Peer::Channel(ref c) = dialog.peer {
-                let name = c.raw.title.clone();
-                if name.to_lowercase().contains("[td]") {
-                    peers_to_scan.push((Some(c.raw.id), dialog.peer.clone()));
-                }
-            }
-        }
-    } else {
-        // Parse folder_id value
-        let mut parsed_id: Option<i64> = None;
-        for pair in query_string.split('&') {
-            let mut parts = pair.split('=');
-            if let Some(key) = parts.next() {
-                if key == "folder_id" {
-                    if let Some(val) = parts.next() {
-                        if !val.is_empty() && val != "null" && val != "none" && val != "None" {
-                            if let Ok(id) = val.parse::<i64>() {
-                                parsed_id = Some(id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let resolved = match resolve_peer(&client, parsed_id, &tg_state.peer_cache).await {
-            Ok(p) => p,
-            Err(e) => return json_error("PEER_ERROR", &e, 400),
-        };
-        peers_to_scan.push((parsed_id, resolved));
-    }
+    let (has_folder_id, peers_to_scan) = require_query_peers!(req, client, tg_state);
 
     let mut all_files: Vec<ApiFile> = Vec::new();
     for (fid, peer) in &peers_to_scan {
@@ -354,30 +501,9 @@ async fn api_list_files(
         while let Some(msg) = msgs.next().await.ok().flatten() {
             if let Some(doc) = msg.media() {
                 let size = media_size(&doc);
-                let (name, mime) = match doc {
-                    Media::Document(d) => {
-                        let doc_name = d.name().to_string();
-                        // Prefer the message caption (set by rename via EditMessage)
-                        let caption = msg.text();
-                        let display_name = if caption.is_empty() {
-                            doc_name
-                        } else {
-                            caption.to_string()
-                        };
-                        (display_name, d.mime_type().map(|s| s.to_string()))
-                    }
-                    Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
-                    _ => ("Unknown".to_string(), None),
-                };
+                let (name, mime) = caption_name_and_mime(&msg, doc);
 
-                all_files.push(ApiFile {
-                    id: msg.id() as i64,
-                    folder_id: *fid,
-                    name,
-                    size,
-                    mime_type: mime,
-                    created_at: msg.date().to_string(),
-                });
+                all_files.push(ApiFile::from_message(&msg, *fid, name, size, mime));
             }
         }
     }
@@ -520,49 +646,26 @@ async fn api_get_file(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
     let message_id = path.into_inner() as i32;
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
-    let peer = match resolve_peer(&client, query.folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("PEER_ERROR", &e, 400),
-    };
+    let peer = require_peer!(client, query.folder_id, tg_state);
 
     match client.get_messages_by_id(peer, &[message_id]).await {
         Ok(messages) => {
             if let Some(Some(msg)) = messages.first() {
                 if let Some(doc) = msg.media() {
                     let size = media_size(&doc);
-                    let (name, mime) = match doc {
-                        Media::Document(d) => {
-                            let doc_name = d.name().to_string();
-                            let caption = msg.text();
-                            let display_name = if caption.is_empty() {
-                                doc_name
-                            } else {
-                                caption.to_string()
-                            };
-                            (display_name, d.mime_type().map(|s| s.to_string()))
-                        }
-                        Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
-                        _ => ("Unknown".to_string(), None),
-                    };
-                    return HttpResponse::Ok().json(ApiFile {
-                        id: msg.id() as i64,
-                        folder_id: query.folder_id,
+                    let (name, mime) = caption_name_and_mime(msg, doc);
+                    return HttpResponse::Ok().json(ApiFile::from_message(
+                        msg,
+                        query.folder_id,
                         name,
                         size,
-                        mime_type: mime,
-                        created_at: msg.date().to_string(),
-                    });
+                        mime,
+                    ));
                 }
             }
             json_error("NOT_FOUND", "File not found", 404)
@@ -580,43 +683,23 @@ async fn api_download_file(
     api_state: web::Data<ApiState>,
     db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
     let message_id = path.into_inner() as i32;
-    match api_registered_encrypted(db_pool.get_ref().clone(), query.folder_id, message_id).await {
-        Ok(true) => {
-            return json_error(
-                "ENCRYPTED_ROUTE_UNAVAILABLE",
-                "Encrypted API downloads require a scoped decryption credential and are disabled",
-                409,
-            )
-        }
-        Ok(false) => {}
-        Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
-    }
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    require_unencrypted!(
+        db_pool,
+        query.folder_id,
+        message_id,
+        "Encrypted API downloads require a scoped decryption credential and are disabled"
+    );
+    let client = require_client!(tg_state);
 
-    let peer = match resolve_peer(&client, query.folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("PEER_ERROR", &e, 400),
-    };
+    let peer = require_peer!(client, query.folder_id, tg_state);
 
     match client.get_messages_by_id(peer, &[message_id]).await {
         Ok(messages) => {
             if let Some(Some(msg)) = messages.first() {
-                if msg.text() == "TDENC2"
-                    || matches!(
-                        msg.media(),
-                        Some(Media::Document(document))
-                            if document.name().to_ascii_lowercase().ends_with(".tdenc")
-                    )
-                {
+                if is_encrypted_message(msg) {
                     return json_error(
                         "ENCRYPTED_ROUTE_UNAVAILABLE",
                         "Encrypted API downloads require a scoped decryption credential and are disabled",
@@ -685,15 +768,9 @@ async fn api_bulk_files(
     cache_dirs: web::Data<CacheDirs>,
     db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     let ids: Vec<i32> = body
         .file_ids
@@ -709,34 +786,16 @@ async fn api_bulk_files(
         })
         .collect();
 
-    let source_folder: Option<i64> = body.folder_id.as_ref().and_then(|val| {
-        if let Some(i) = val.as_i64() {
-            Some(i)
-        } else if let Some(s) = val.as_str() {
-            s.parse::<i64>().ok()
-        } else {
-            None
-        }
-    });
+    let source_folder: Option<i64> = body.folder_id.as_ref().and_then(json_folder_id);
 
     let target_folder: Option<i64> = body
         .payload
         .as_ref()
         .and_then(|p| p.folder_id.as_ref())
-        .and_then(|val| {
-            if let Some(i) = val.as_i64() {
-                Some(i)
-            } else if let Some(s) = val.as_str() {
-                s.parse::<i64>().ok()
-            } else {
-                None
-            }
-        });
+        .and_then(json_folder_id);
 
     let ids_for_check = ids.clone();
-    let folder_key = source_folder
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "home".to_string());
+    let folder_key = registry_folder_key(source_folder);
     let contains_encrypted = crate::db::with_connection(
         db_pool.get_ref().clone(),
         move |connection| {
@@ -765,16 +824,11 @@ async fn api_bulk_files(
 
     match body.action.as_str() {
         "delete" => {
-            let peer = match resolve_peer(&client, source_folder, &tg_state.peer_cache).await {
-                Ok(p) => p,
-                Err(e) => return json_error("PEER_ERROR", &e, 400),
-            };
+            let peer = require_peer!(client, source_folder, tg_state);
             if let Err(e) = client.delete_messages(&peer, &ids).await {
                 return json_error("DELETE_FAILED", &e.to_string(), 500);
             }
-            let folder_key = source_folder
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "home".to_string());
+            let folder_key = registry_folder_key(source_folder);
             let ids_for_registry = ids.clone();
             let _ = crate::db::with_connection(db_pool.get_ref().clone(), move |connection| {
                 for message_id in &ids_for_registry {
@@ -791,9 +845,7 @@ async fn api_bulk_files(
             .await;
 
             // Clean up stale thumbnail and preview caches for deleted messages.
-            let source_folder_key = source_folder
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "home".to_string());
+            let source_folder_key = registry_folder_key(source_folder);
             spawn_cache_cleanup(
                 cache_dirs.thumbnail_dir.clone(),
                 cache_dirs.preview_dir.clone(),
@@ -834,9 +886,7 @@ async fn api_bulk_files(
                 // Clean up stale thumbnail and preview caches for the old message IDs.
                 // After a move (forward+delete), messages get new IDs in the target folder,
                 // so any cached thumbnails/previews under the old IDs are orphaned.
-                let source_folder_key = source_folder
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "home".to_string());
+                let source_folder_key = registry_folder_key(source_folder);
                 spawn_cache_cleanup(
                     cache_dirs.thumbnail_dir.clone(),
                     cache_dirs.preview_dir.clone(),
@@ -846,10 +896,7 @@ async fn api_bulk_files(
             }
         }
         "archive" => {
-            let peer = match resolve_peer(&client, source_folder, &tg_state.peer_cache).await {
-                Ok(p) => p,
-                Err(e) => return json_error("PEER_ERROR", &e, 400),
-            };
+            let peer = require_peer!(client, source_folder, tg_state);
 
             // Download all files in async context, then delegate zip I/O
             // to spawn_blocking so we never block an Actix worker thread.
@@ -978,15 +1025,9 @@ async fn api_search_files(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     let search_q = match query.q.as_deref() {
         Some(q) if !q.trim().is_empty() => q,
@@ -999,48 +1040,7 @@ async fn api_search_files(
         }
     };
 
-    let query_string = req.query_string();
-    let has_folder_id = query_string
-        .split('&')
-        .any(|p| p.starts_with("folder_id=") || p == "folder_id");
-
-    let mut peers_to_scan = Vec::new();
-    if !has_folder_id {
-        if let Ok(me_peer) = resolve_peer(&client, None, &tg_state.peer_cache).await {
-            peers_to_scan.push((None, me_peer));
-        }
-        let mut dialogs = client.iter_dialogs();
-        while let Some(dialog) = dialogs.next().await.ok().flatten() {
-            if let Peer::Channel(ref c) = dialog.peer {
-                let name = c.raw.title.clone();
-                if name.to_lowercase().contains("[td]") {
-                    peers_to_scan.push((Some(c.raw.id), dialog.peer.clone()));
-                }
-            }
-        }
-    } else {
-        let mut parsed_id: Option<i64> = None;
-        for pair in query_string.split('&') {
-            let mut parts = pair.split('=');
-            if let Some(key) = parts.next() {
-                if key == "folder_id" {
-                    if let Some(val) = parts.next() {
-                        if !val.is_empty() && val != "null" && val != "none" && val != "None" {
-                            if let Ok(id) = val.parse::<i64>() {
-                                parsed_id = Some(id);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let resolved = match resolve_peer(&client, parsed_id, &tg_state.peer_cache).await {
-            Ok(p) => p,
-            Err(e) => return json_error("PEER_ERROR", &e, 400),
-        };
-        peers_to_scan.push((parsed_id, resolved));
-    }
+    let (_, peers_to_scan) = require_query_peers!(req, client, tg_state);
 
     let mut matching_files = Vec::new();
     for (fid, peer) in &peers_to_scan {
@@ -1048,30 +1048,10 @@ async fn api_search_files(
         while let Some(msg) = msgs.next().await.ok().flatten() {
             if let Some(doc) = msg.media() {
                 let size = media_size(&doc);
-                let (name, mime) = match doc {
-                    Media::Document(d) => {
-                        let doc_name = d.name().to_string();
-                        let caption = msg.text();
-                        let display_name = if caption.is_empty() {
-                            doc_name
-                        } else {
-                            caption.to_string()
-                        };
-                        (display_name, d.mime_type().map(|s| s.to_string()))
-                    }
-                    Media::Photo(_) => ("Photo.jpg".to_string(), Some("image/jpeg".into())),
-                    _ => ("Unknown".to_string(), None),
-                };
+                let (name, mime) = caption_name_and_mime(&msg, doc);
 
                 if name.to_lowercase().contains(&search_q.to_lowercase()) {
-                    matching_files.push(ApiFile {
-                        id: msg.id() as i64,
-                        folder_id: *fid,
-                        name,
-                        size,
-                        mime_type: mime,
-                        created_at: msg.date().to_string(),
-                    });
+                    matching_files.push(ApiFile::from_message(&msg, *fid, name, size, mime));
                 }
             }
         }
@@ -1089,28 +1069,17 @@ async fn api_delete_file(
     api_state: web::Data<ApiState>,
     db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
     let message_id = path.into_inner();
     let folder_id = query.folder_id;
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
-    let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("PEER_ERROR", &e, 400),
-    };
+    let peer = require_peer!(client, folder_id, tg_state);
 
     match client.delete_messages(&peer, &[message_id]).await {
         Ok(_) => {
-            let folder_key = folder_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "home".to_string());
+            let folder_key = registry_folder_key(folder_id);
             let _ = crate::db::with_connection(db_pool.get_ref().clone(), move |connection| {
                 if let Ok(mut statement) = connection
                     .prepare("DELETE FROM encrypted_files WHERE folder_key = ? AND message_id = ?")
@@ -1143,18 +1112,12 @@ async fn api_copy_file(
     api_state: web::Data<ApiState>,
     db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
     let message_id = path.into_inner();
     let source_folder_id = body.source_folder_id;
     let target_folder_id = body.folder_id;
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     let source_peer = match resolve_peer(&client, source_folder_id, &tg_state.peer_cache).await {
         Ok(p) => p,
@@ -1249,9 +1212,7 @@ async fn api_update_file(
     cache_dirs: web::Data<CacheDirs>,
     db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
     let message_id = path.into_inner();
     match api_registered_encrypted(db_pool.get_ref().clone(), body.source_folder_id, message_id).await {
         Ok(true) => return json_error(
@@ -1263,20 +1224,12 @@ async fn api_update_file(
         Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
     }
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     // Rename first — edits the original message's caption so the
     // updated name is carried over if a move (forward) follows.
     if let Some(ref new_name) = body.name {
-        let rename_peer =
-            match resolve_peer(&client, body.source_folder_id, &tg_state.peer_cache).await {
-                Ok(p) => p,
-                Err(e) => return json_error("PEER_ERROR", &e, 400),
-            };
+        let rename_peer = require_peer!(client, body.source_folder_id, tg_state);
 
         // Verify the message exists before attempting to edit it.
         // This avoids a cryptic MESSAGE_ID_INVALID RPC error when the message
@@ -1352,9 +1305,7 @@ async fn api_update_file(
             }
 
             // Clean up stale thumbnail and preview caches for the old message ID
-            let source_folder_key = source_folder_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "home".to_string());
+            let source_folder_key = registry_folder_key(source_folder_id);
             spawn_cache_cleanup(
                 cache_dirs.thumbnail_dir.clone(),
                 cache_dirs.preview_dir.clone(),
@@ -1376,15 +1327,9 @@ async fn api_upload_file(
     bw_manager: web::Data<Arc<BandwidthManager>>,
     net_config: web::Data<Arc<NetworkConfig>>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     let temp_path = std::env::temp_dir().join(format!(
         "upload_{}_{}",
@@ -1626,15 +1571,9 @@ async fn api_list_folders(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     let mut folders = Vec::new();
     let mut dialogs = client.iter_dialogs();
@@ -1646,13 +1585,7 @@ async fn api_list_folders(
             discovered.insert(id, dialog.peer.clone());
             let name = c.raw.title.clone();
             if name.to_lowercase().contains("[td]") {
-                let display_name = name
-                    .replace(" [TD]", "")
-                    .replace(" [td]", "")
-                    .replace("[TD]", "")
-                    .replace("[td]", "")
-                    .trim()
-                    .to_string();
+                let display_name = strip_td_tag(&name);
                 let username = c.raw.username.clone();
                 let is_public = username.is_some();
                 folders.push(FolderMetadata {
@@ -1688,15 +1621,9 @@ async fn api_create_folder(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     match create_folder_inner(&body.name, &client, &tg_state.peer_cache).await {
         Ok(folder) => HttpResponse::Ok().json(folder),
@@ -1717,16 +1644,10 @@ async fn api_rename_folder(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
     let folder_id = path.into_inner();
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     match rename_folder_inner(folder_id, &body.name, &client, &tg_state.peer_cache).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
@@ -1741,16 +1662,10 @@ async fn api_delete_folder(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
     let folder_id = path.into_inner();
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     match delete_folder_inner(folder_id, &client, &tg_state.peer_cache).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({ "success": true })),
@@ -1787,15 +1702,9 @@ async fn api_storage_stats(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     let mut peers_to_scan = Vec::new();
     if let Ok(me_peer) = resolve_peer(&client, None, &tg_state.peer_cache).await {
@@ -1806,13 +1715,7 @@ async fn api_storage_stats(
         if let Peer::Channel(ref c) = dialog.peer {
             let name = c.raw.title.clone();
             if name.to_lowercase().contains("[td]") {
-                let display_name = name
-                    .replace(" [TD]", "")
-                    .replace(" [td]", "")
-                    .replace("[TD]", "")
-                    .replace("[td]", "")
-                    .trim()
-                    .to_string();
+                let display_name = strip_td_tag(&name);
                 peers_to_scan.push((Some(c.raw.id), display_name, dialog.peer.clone()));
             }
         }
@@ -1888,29 +1791,11 @@ async fn api_storage_duplicates(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
-    let mut peers_to_scan = Vec::new();
-    if let Ok(me_peer) = resolve_peer(&client, None, &tg_state.peer_cache).await {
-        peers_to_scan.push((None, me_peer));
-    }
-    let mut dialogs = client.iter_dialogs();
-    while let Some(dialog) = dialogs.next().await.ok().flatten() {
-        if let Peer::Channel(ref c) = dialog.peer {
-            let name = c.raw.title.clone();
-            if name.to_lowercase().contains("[td]") {
-                peers_to_scan.push((Some(c.raw.id), dialog.peer.clone()));
-            }
-        }
-    }
+    let peers_to_scan = all_folder_peers(&client, &tg_state).await;
 
     let mut file_groups: HashMap<(String, u64), Vec<ApiFile>> = HashMap::new();
 
@@ -1930,14 +1815,7 @@ async fn api_storage_duplicates(
                 file_groups
                     .entry((name.clone(), size))
                     .or_default()
-                    .push(ApiFile {
-                        id: msg.id() as i64,
-                        folder_id: fid,
-                        name,
-                        size,
-                        mime_type: mime,
-                        created_at: msg.date().to_string(),
-                    });
+                    .push(ApiFile::from_message(&msg, fid, name, size, mime));
             }
         }
     }
@@ -1957,15 +1835,9 @@ async fn api_empty_folders(
     tg_state: web::Data<Arc<TelegramState>>,
     api_state: web::Data<ApiState>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
     let mut folders_to_check = Vec::new();
     let mut dialogs = client.iter_dialogs();
@@ -1973,13 +1845,7 @@ async fn api_empty_folders(
         if let Peer::Channel(ref c) = dialog.peer {
             let name = c.raw.title.clone();
             if name.to_lowercase().contains("[td]") {
-                let display_name = name
-                    .replace(" [TD]", "")
-                    .replace(" [td]", "")
-                    .replace("[TD]", "")
-                    .replace("[td]", "")
-                    .trim()
-                    .to_string();
+                let display_name = strip_td_tag(&name);
                 folders_to_check.push((c.raw.id, display_name, dialog.peer.clone()));
             }
         }
@@ -2020,47 +1886,24 @@ async fn api_get_file_thumbnail(
     api_state: web::Data<ApiState>,
     db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
     let message_id = path.into_inner();
     let folder_id = query.folder_id;
-    match api_registered_encrypted(db_pool.get_ref().clone(), folder_id, message_id).await {
-        Ok(true) => {
-            return json_error(
-                "ENCRYPTED_ROUTE_UNAVAILABLE",
-                "Encrypted thumbnails are not exposed by the local API",
-                409,
-            )
-        }
-        Ok(false) => {}
-        Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
-    }
+    require_unencrypted!(
+        db_pool,
+        folder_id,
+        message_id,
+        "Encrypted thumbnails are not exposed by the local API"
+    );
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
-    let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("PEER_ERROR", &e, 400),
-    };
+    let peer = require_peer!(client, folder_id, tg_state);
 
-    let messages = match client.get_messages_by_id(&peer, &[message_id]).await {
-        Ok(msgs) => msgs,
-        Err(e) => return json_error("GET_MESSAGE_ERROR", &e.to_string(), 500),
-    };
+    let messages = require_messages!(client, peer, message_id);
 
     if let Some(m) = messages.into_iter().flatten().next() {
-        if m.text() == "TDENC2"
-            || matches!(
-                m.media(),
-                Some(Media::Document(document))
-                    if document.name().to_ascii_lowercase().ends_with(".tdenc")
-            )
-        {
+        if is_encrypted_message(&m) {
             return json_error(
                 "ENCRYPTED_ROUTE_UNAVAILABLE",
                 "Encrypted thumbnails are not exposed by the local API",
@@ -2146,51 +1989,28 @@ async fn api_media_info(
     api_state: web::Data<ApiState>,
     db_pool: web::Data<crate::db::DbConnection>,
 ) -> impl Responder {
-    if let Err(e) = check_auth(&req, &api_state) {
-        return e;
-    }
+    require_auth!(req, api_state);
     let message_id = path.into_inner();
     let folder_id = query.folder_id;
-    match api_registered_encrypted(db_pool.get_ref().clone(), folder_id, message_id).await {
-        Ok(true) => {
-            return json_error(
-                "ENCRYPTED_ROUTE_UNAVAILABLE",
-                "Encrypted media metadata is not exposed by the local API",
-                409,
-            )
-        }
-        Ok(false) => {}
-        Err(error) => return json_error("ENCRYPTION_STATE_UNKNOWN", &error, 503),
-    }
+    require_unencrypted!(
+        db_pool,
+        folder_id,
+        message_id,
+        "Encrypted media metadata is not exposed by the local API"
+    );
 
-    let client_opt = { tg_state.client.lock().await.clone() };
-    let client = match client_opt {
-        Some(c) => c,
-        None => return json_error("NOT_CONNECTED", "Telegram client is not connected", 503),
-    };
+    let client = require_client!(tg_state);
 
-    let peer = match resolve_peer(&client, folder_id, &tg_state.peer_cache).await {
-        Ok(p) => p,
-        Err(e) => return json_error("PEER_ERROR", &e, 400),
-    };
+    let peer = require_peer!(client, folder_id, tg_state);
 
-    let messages = match client.get_messages_by_id(&peer, &[message_id]).await {
-        Ok(msgs) => msgs,
-        Err(e) => return json_error("GET_MESSAGE_ERROR", &e.to_string(), 500),
-    };
+    let messages = require_messages!(client, peer, message_id);
 
     let msg = match messages.into_iter().flatten().next() {
         Some(m) => m,
         None => return json_error("NOT_FOUND", "File message not found", 404),
     };
 
-    if msg.text() == "TDENC2"
-        || matches!(
-            msg.media(),
-            Some(Media::Document(document))
-                if document.name().to_ascii_lowercase().ends_with(".tdenc")
-        )
-    {
+    if is_encrypted_message(&msg) {
         return json_error(
             "ENCRYPTED_ROUTE_UNAVAILABLE",
             "Encrypted media metadata is not exposed by the local API",
