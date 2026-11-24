@@ -5,6 +5,7 @@ import { SettingsModal } from '../desktop/dashboard/SettingsModal';
 import { ShareDialog } from '../desktop/dashboard/ShareDialog';
 import { BottomNavBar } from '../mobile/BottomNavBar';
 import { MobileSupporterCard } from '../mobile/MobileSupporterCard';
+import MobileDashboardFixture from './MobileDashboardFixture';
 import type { TelegramFile, TelegramFolder } from '../../types';
 
 const file: TelegramFile = {
@@ -80,6 +81,10 @@ export default function AccessibilityFixtures() {
         <BottomNavBar activeTab={mobileTab} setActiveTab={setMobileTab} isAndroid />
       </main>
     );
+  }
+
+  if (fixture === 'mobile-dashboard') {
+    return <MobileDashboardFixture />;
   }
 
   return (

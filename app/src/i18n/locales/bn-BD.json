@@ -618,6 +618,7 @@
     "browser_note": "স্পন্সর করা সামগ্রী আপনার ব্রাউজারে খোলে৷ আপনি শুধুমাত্র একবার এই গেটওয়ে দেখতে.",
     "close_ad": "বিজ্ঞাপন বন্ধ করুন"
   },
+  "mobile_search": { "title": "Search files", "input_label": "Search files in this folder", "clear": "Clear search", "filters": "Filters", "results_other": "{{count}} results", "type": "File type", "type_all": "All types", "type_image": "Images", "type_video": "Videos", "type_audio": "Audio", "type_document": "Documents", "type_archive": "Archives", "type_other": "Other", "size": "Size", "size_any": "Any size", "size_small": "Under 10 MB", "size_medium": "10–100 MB", "size_large": "100 MB and over", "date": "Date added", "date_any": "Any time", "date_7d": "Last 7 days", "date_30d": "Last 30 days", "date_1y": "Last year", "reset": "Reset filters", "empty_folder_title": "This folder is empty", "empty_folder_description": "Upload files or synchronise folders to begin managing content.", "empty_results_title": "No matching files", "empty_results_description": "Try a different search or clear the filters." },
   "supporter_offer": {
     "eyebrow": "Telegram Drive-কে সহায়তা করুন",
     "ad_dismissed_title": "বিজ্ঞাপনে বিরক্ত? একবার $5 দিন এবং সব বিজ্ঞাপন চিরতরে বন্ধ করুন!",

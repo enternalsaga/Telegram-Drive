@@ -437,7 +437,7 @@ describe('release safety gates', () => {
 
   it('keeps optional viewers, media tooling, settings, and non-English locales off the initial graph', () => {
     const desktop = readFileSync(resolve(process.cwd(), 'src', 'components', 'desktop', 'DesktopDashboard.tsx'), 'utf8');
-    const mobile = readFileSync(resolve(process.cwd(), 'src', 'components', 'mobile', 'MobileDashboard.tsx'), 'utf8');
+    const mobile = readFileSync(resolve(process.cwd(), 'src', 'components', 'mobile', 'MobileDashboardOverlays.tsx'), 'utf8');
     const media = readFileSync(resolve(process.cwd(), 'src', 'components', 'desktop', 'dashboard', 'AdaptiveMediaPlayer.tsx'), 'utf8');
     const i18n = readFileSync(resolve(process.cwd(), 'src', 'i18n', 'index.ts'), 'utf8');
     const fileOperations = readFileSync(resolve(process.cwd(), 'src', 'hooks', 'useFileOperations.ts'), 'utf8');

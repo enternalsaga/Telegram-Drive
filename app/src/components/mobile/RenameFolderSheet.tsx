@@ -1,28 +1,23 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Pencil } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { MobileBottomSheet } from './MobileBottomSheet';
+import { type RegisterMobileBackHandler } from '../../hooks/useMobileBackHandlers';
 
 interface RenameFolderSheetProps {
     folderId: number;
     currentName: string;
     onRename: (folderId: number, oldName: string, newName: string) => Promise<void>;
     onClose: () => void;
+    registerBackHandler?: RegisterMobileBackHandler;
 }
 
-export function RenameFolderSheet({ folderId, currentName, onRename, onClose }: RenameFolderSheetProps) {
+export function RenameFolderSheet({ folderId, currentName, onRename, onClose, registerBackHandler }: RenameFolderSheetProps) {
     const [name, setName] = useState(currentName);
     const [isSubmitting, setIsSubmitting] = useState(false);
-    const inputRef = useRef<HTMLInputElement>(null);
     const { t } = useTranslation();
 
-    useEffect(() => {
-        // Small delay to let the slide-in animation start before focusing
-        const timer = setTimeout(() => {
-            inputRef.current?.focus();
-            inputRef.current?.select();
-        }, 200);
-        return () => clearTimeout(timer);
-    }, []);
+    useEffect(() => registerBackHandler?.('rename-folder', 120, onClose), [onClose, registerBackHandler]);
 
     const handleSubmit = async () => {
         if (isSubmitting) return;
@@ -45,32 +40,16 @@ export function RenameFolderSheet({ folderId, currentName, onRename, onClose }: 
         if (e.key === 'Enter') {
             e.preventDefault();
             handleSubmit();
-        } else if (e.key === 'Escape') {
-            onClose();
         }
     };
 
     return (
-        <div
-            className="fixed inset-0 z-[200] flex items-end justify-center bg-black/50 backdrop-blur-sm"
-            onClick={onClose}
-        >
-            <div
-                className="w-full max-w-lg bg-telegram-surface border border-telegram-border/40 rounded-t-3xl p-5 pb-8 shadow-2xl animate-in slide-in-from-bottom duration-300"
-                onClick={e => e.stopPropagation()}
-            >
-                {/* Drag handle */}
-                <div className="flex justify-center mb-4">
-                    <div className="w-10 h-1 rounded-full bg-telegram-border/60" />
-                </div>
-
-                {/* Header */}
-                <div className="flex items-center gap-3 mb-4">
+        <MobileBottomSheet title={t('files.rename_folder')} onClose={onClose}>
+                <div className="mb-4 flex items-center gap-3">
                     <div className="p-2 rounded-xl bg-blue-400/10 text-blue-400">
                         <Pencil className="w-5 h-5" />
                     </div>
                     <div>
-                        <h3 className="text-base font-bold text-telegram-text">{t('files.rename_folder')}</h3>
                         <p className="text-xs text-telegram-subtext mt-0.5">
                             {t('files.enter_new_name', { name: currentName })}
                         </p>
@@ -79,8 +58,8 @@ export function RenameFolderSheet({ folderId, currentName, onRename, onClose }: 
 
                 {/* Input */}
                 <input
-                    ref={inputRef}
                     type="text"
+                    data-modal-autofocus
                     value={name}
                     onChange={e => setName(e.target.value)}
                     onKeyDown={handleKeyDown}
@@ -114,7 +93,6 @@ export function RenameFolderSheet({ folderId, currentName, onRename, onClose }: 
                         )}
                     </button>
                 </div>
-            </div>
-        </div>
+        </MobileBottomSheet>
     );
 }

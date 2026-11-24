@@ -636,6 +636,7 @@
     "browser_note": "Treści sponsorowane otwierają się w Twojej przeglądarce. Tę bramę widzisz tylko raz.",
     "close_ad": "Zamknij reklamę"
   },
+  "mobile_search": { "title": "Search files", "input_label": "Search files in this folder", "clear": "Clear search", "filters": "Filters", "results_other": "{{count}} results", "type": "File type", "type_all": "All types", "type_image": "Images", "type_video": "Videos", "type_audio": "Audio", "type_document": "Documents", "type_archive": "Archives", "type_other": "Other", "size": "Size", "size_any": "Any size", "size_small": "Under 10 MB", "size_medium": "10–100 MB", "size_large": "100 MB and over", "date": "Date added", "date_any": "Any time", "date_7d": "Last 7 days", "date_30d": "Last 30 days", "date_1y": "Last year", "reset": "Reset filters", "empty_folder_title": "This folder is empty", "empty_folder_description": "Upload files or synchronise folders to begin managing content.", "empty_results_title": "No matching files", "empty_results_description": "Try a different search or clear the filters." },
   "supporter_offer": {
     "eyebrow": "Wesprzyj Telegram Drive",
     "ad_dismissed_title": "Masz dość reklam? Zapłać $5 raz i nie oglądaj ich więcej!",
